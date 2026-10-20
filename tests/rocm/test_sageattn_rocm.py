@@ -261,3 +261,55 @@ def test_sm_scale():
     ref = ref_attn(q, k, v, sm_scale=sm)
     cos, l1, _ = metrics(rapi.sageattn_rocm(q, k, v, sm_scale=sm), ref)
     assert cos > 0.9995 and l1 < 0.03
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# native gfx11 kernel (sageattention/rocm/native/sage_gfx11.hip)
+
+GFX11 = torch.cuda.is_available() and is_rocm() and torch.cuda.get_device_properties(0).gcnArchName.startswith("gfx11")
+native = pytest.mark.skipif(not GFX11, reason="native kernel is gfx11-only")
+
+
+@native
+@pytest.mark.parametrize("D", [64, 128, 72, 96])
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("layout", ["HND", "NHD"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("waves", [4, 8])
+def test_native_accuracy(D, causal, layout, dtype, waves):
+    from sageattention.rocm.native.sage import sageattn_native
+
+    q, k, v = realistic_qkv(2, 6, 3, 1037, 1037, D, dtype)  # GQA 2:1, ragged length
+    ref = ref_attn(q, k, v, is_causal=causal)
+    o = sageattn_native(to_layout(q, layout), to_layout(k, layout), to_layout(v, layout), tensor_layout=layout,
+                        is_causal=causal, waves=waves)  # fmt: skip
+    o_t = rapi.sageattn_rocm(to_layout(q, layout), to_layout(k, layout), to_layout(v, layout), tensor_layout=layout,
+                             is_causal=causal, _native=False)  # fmt: skip
+    cos, l1, _ = metrics(from_layout(o, layout), ref)
+    cos_t, l1_t, _ = metrics(from_layout(o_t, layout), ref)
+    assert cos > 0.9995 and l1 < 0.03, (cos, l1)
+    assert l1 < l1_t * 1.1 + 1e-3, (l1, l1_t)  # as accurate as the Triton kernel (same quantization)
+
+
+@native
+@pytest.mark.parametrize("Nq,Nk", [(1, 333), (77, 4096), (4096, 77), (300, 1)])
+def test_native_lengths(Nq, Nk):
+    from sageattention.rocm.native.sage import sageattn_native
+
+    q, k, v = realistic_qkv(1, 4, 4, Nq, Nk, 128, torch.float16)
+    cos, l1, _ = metrics(sageattn_native(q, k, v), ref_attn(q, k, v))
+    assert cos > 0.9995 and l1 < 0.03, (cos, l1)
+
+
+@native
+def test_native_lse_and_dispatch():
+    from sageattention.rocm.native import sage as ns
+
+    q, k, v = realistic_qkv(2, 4, 4, 700, 700, 64, torch.float16)
+    o_n, lse_n = ns.sageattn_native(q, k, v, return_lse=True)
+    o_t, lse_t = rapi.sageattn_rocm(q, k, v, return_lse=True, _native=False)
+    assert (lse_n - lse_t).abs().max().item() < 0.05
+    # the public API uses the native kernel on gfx11
+    o = sageattention.sageattn(q, k, v)
+    assert ns.status().get(0) == "ok"
+    assert torch.equal(o, ns.sageattn_native(q, k, v))

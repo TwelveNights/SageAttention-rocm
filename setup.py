@@ -300,6 +300,8 @@ setup(
     long_description_content_type='text/markdown',
     url='https://github.com/thu-ml/SageAttention',
     packages=find_packages(),
+    # the ROCm backend's RDNA3 kernel source, compiled at runtime with hipRTC
+    package_data={"sageattention.rocm.native": ["*.hip", "*.h"]},
     python_requires='>=3.9',
     ext_modules=ext_modules,
     cmdclass=cmdclass,

@@ -25,7 +25,7 @@ import torch
 
 from . import arch as _arch
 from .attn import sage_attn_fwd
-from .quant import padded_head_dim, quant_qk_int8, quant_v_fp8
+from .quant import padded_head_dim, quant_qk_int8, quant_v_fp8, seq_mean
 
 __all__ = ["sageattn_rocm", "sageattn_varlen_rocm", "default_config", "default_pv_dtype", "QK_GRAN_TO_QBLK"]
 
@@ -75,11 +75,10 @@ def default_config(head_dim: int, is_causal: bool, pv_fp8: bool, device_index: i
                 return dict(BLOCK_M=128, BLOCK_N=128, schedule_hint="attention", **base)
             return dict(BLOCK_M=128, BLOCK_N=64, **base)
         return dict(BLOCK_M=64, BLOCK_N=64, num_warps=4, num_stages=1, waves_per_eu=1)
-    # RDNA3 / RDNA4 / other: wave32
-    if dp <= 64:
-        return dict(BLOCK_M=128, BLOCK_N=64, num_warps=4, num_stages=1)
+    # RDNA3 / RDNA4 / other: wave32. RX 7800 XT sweep, B1 H24 N4608 D128: 42 TFLOP/s (BLOCK_M=128, BLOCK_N=64,
+    # 8 warps: 36-38); see native/ for the faster hand-written gfx11 kernel
     if dp <= 128:
-        return dict(BLOCK_M=128, BLOCK_N=64, num_warps=8, num_stages=1)
+        return dict(BLOCK_M=64, BLOCK_N=32, num_warps=4, num_stages=2)
     return dict(BLOCK_M=64, BLOCK_N=32, num_warps=4, num_stages=1)
 
 
@@ -130,6 +129,7 @@ def sageattn_rocm(
     qk_quant_gran: str = "per_warp",
     pv_dtype: str = "fp16",
     config: Optional[dict] = None,
+    _native: bool = True,
     **kwargs: Any,
 ):
     """
@@ -156,8 +156,17 @@ def sageattn_rocm(
     if is_causal:
         assert attn_mask is None, "Mask should be None for causal attention."
 
+    pv_fp8 = _want_fp8(pv_dtype, dev)
+    if _native and config is None:
+        # hand-written gfx11 kernel (native/sage_gfx11.hip); None -> not applicable, use Triton
+        from .native.sage import try_sageattn
+
+        res = try_sageattn(q, k, v, tensor_layout, is_causal, sm_scale, return_lse, smooth_k, qk_quant_gran, attn_mask, pv_fp8)
+        if res is not None:
+            return res
+
     if smooth_k:
-        km = k.mean(dim=seq_dim, dtype=torch.float32)  # [B, Hk, D]
+        km = seq_mean(k, tensor_layout)  # [B, Hk, D] fp32
         if return_lse:
             nq, nk = q.size(nh_dim), k.size(nh_dim)
             km_b = km.repeat_interleave(nq // nk, dim=1) if nq != nk else km
@@ -166,7 +175,6 @@ def sageattn_rocm(
     else:
         km = None
 
-    pv_fp8 = _want_fp8(pv_dtype, dev)
     cfg = dict(config) if config is not None else default_config(head_dim, is_causal, pv_fp8, dev)
     QBLK = QK_GRAN_TO_QBLK[qk_quant_gran]
     KBLK = max(64, cfg["BLOCK_N"])

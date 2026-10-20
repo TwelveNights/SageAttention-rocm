@@ -6,7 +6,8 @@ Benchmark SageAttention (ROCm backend) against FP16 flash attention baselines.
     python bench/rocm/bench_attn.py --shape 1,24,4608,128 --sweep   # tile sweep (kernel only)
 
 Reports ms and TFLOP/s (4*B*H*Nq*Nk*D, halved for causal) per method:
-  sage-fp16 / sage-fp8 : full sageattn call (quantization + attention)
+  sage-fp16 / sage-fp8 : full sageattn call (quantization + attention; native kernel on gfx11)
+  sage-triton          : full call, Triton kernel forced
   sage-*-kern          : attention kernel only, pre-quantized inputs
   triton-fa            : nunchaku-rocm's FP16 Triton flash attention (autotuned)
   sdpa                 : torch.nn.functional.scaled_dot_product_attention
@@ -101,6 +102,10 @@ def run_shape(args, B, H, N, D):
     fp8_ok = arch_family() in ("cdna3", "cdna4")
     if "sage-fp16" in methods:
         res["sage-fp16"] = timeit(lambda: sapi.sageattn_rocm(q, k, v, tensor_layout=layout, is_causal=causal), reps=reps)
+    if "sage-triton" in methods:
+        res["sage-triton"] = timeit(
+            lambda: sapi.sageattn_rocm(q, k, v, tensor_layout=layout, is_causal=causal, _native=False), reps=reps
+        )
     if "sage-fp8" in methods and fp8_ok:
         res["sage-fp8"] = timeit(
             lambda: sapi.sageattn_rocm(q, k, v, tensor_layout=layout, is_causal=causal, pv_dtype="fp8"), reps=reps
@@ -135,6 +140,10 @@ def run_shape(args, B, H, N, D):
 
             qn, kn, vn = (x.transpose(1, 2).contiguous() if layout == "HND" else x for x in (q, k, v))
             res["aiter"] = timeit(lambda: aiter.flash_attn_func(qn, kn, vn, causal=causal), reps=reps)
+            if "aiter-fp8" in methods:
+                # CK FP8 forward with per-tensor FP8 inputs (cast outside the timed region; a speed reference only)
+                q8, k8, v8 = (x.to(fp8_dtype()) for x in (qn, kn, vn))
+                res["aiter-fp8"] = timeit(lambda: aiter.flash_attn_fp8_pertensor_func(q8, k8, v8, causal=causal), reps=reps)
         except Exception as e:  # noqa: BLE001
             print(f"  aiter unavailable: {type(e).__name__}: {e}"[:200])
     line = f"B{B} H{H} N{N} D{D} {'causal' if causal else 'full'} {layout} {args.dtype}:"

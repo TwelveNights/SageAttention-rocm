@@ -14,3 +14,6 @@ bench_qk_int8_pv_fp8_cuda_head96.py
 *unmask.py
 logs/
 scratch/*.s
+scratch/
+.cache/
+runs/

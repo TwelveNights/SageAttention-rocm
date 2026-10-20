@@ -65,6 +65,66 @@ Paper: https://arxiv.org/abs/2505.11594
 - [2024-11-11]: Support for different sequence lengths between `q` and `k,v`,  `(batch_size, head_num, seq_len, head_dim)` or `(batch_size, seq_len, head_num, head_dim)` input shapes, and `group-query attention` is available now.
 
 
+## AMD GPUs (ROCm)
+
+> This section documents the ROCm port on the `rocm` branch of this fork (not upstream). Everything below is
+> new code under `sageattention/rocm/`; the CUDA paths are untouched.
+
+On a ROCm build of PyTorch every public entry point -- `sageattn`, `sageattn_qk_int8_pv_fp16_triton`,
+`sageattn_qk_int8_pv_fp16_cuda`, `sageattn_qk_int8_pv_fp8_cuda`, `sageattn_qk_int8_pv_fp8_cuda_sm90`,
+`sageattn_varlen` -- keeps its signature and dispatches to the AMD backend, so callers such as ComfyUI
+(`--use-sage-attention`) and diffusers (`transformer.set_attention_backend("sage")`) work unchanged.
+
+**What runs where**
+
+| GPU | Q·K^T | P·V | Kernel |
+| --- | --- | --- | --- |
+| CDNA3 (MI300X, gfx942) | INT8 (MFMA i8) | FP16, or FP8 e4m3**fnuz** with `pv_dtype="fp8"` / the `*_fp8_*` entry points | Triton (`sageattention/rocm/attn.py`) |
+| RDNA3 (RX 7000 / W7000, gfx11) | INT8 (WMMA iu8) | FP16 (RDNA3 has no FP8) | hand-written HIP kernel compiled at runtime with hipRTC (`sageattention/rocm/native/sage_gfx11.hip`), Triton fallback |
+| other AMD GPUs | INT8 | FP16 | Triton |
+
+Quantization follows upstream: per-block INT8 Q (pre-scaled by `sm_scale·log2 e`) and K (after `smooth_k`,
+i.e. subtracting the per-channel mean of K over the sequence), FP32 online softmax in the exp2 domain.
+`qk_quant_gran` maps to the Q-scale block height (`per_block` 128 rows, `per_warp` 32, `per_thread` 16 --
+there are no NVIDIA warps / mma thread layouts to mirror). AMD matrix cores always accumulate in FP32, so
+`pv_accum_dtype` only selects FP8 vs FP16 P·V. Supported: NHD/HND (any strides, e.g. views of a fused QKV),
+fp16/bf16, head dims up to 256 (64/128 native on gfx11), causal, GQA/MQA, `attn_mask` (bool or additive;
+Triton kernel), `return_lse`, varlen, `qo_len != kv_len`.
+
+**SageAttention3** (`sageattention3_blackwell/`, microscaling FP4) needs Blackwell's block-scaled FP4 tensor
+cores; no AMD GPU before CDNA4 has an equivalent, so it is not ported. On ROCm its `setup.py` installs the
+Python package only and `sageattn3_blackwell()` falls back to `sageattention.sageattn` (INT8) with a one-time
+warning.
+
+**Install** (pure Python + Triton, nothing is compiled at install time):
+
+```bash
+pip install --no-build-isolation .     # detects ROCm torch (or set SAGEATTN_ROCM=1) and skips the CUDA extensions
+```
+
+The gfx11 kernel is compiled on first use with hipRTC from the ROCm runtime torch already loaded (no hipcc,
+no MSVC on Windows) in a few seconds, self-tested against the Triton kernel, and cached under
+`$SAGEATTN_CACHE_DIR` (default `~/.cache/sageattention` / `%LOCALAPPDATA%\sageattention\cache`).
+`SAGEATTN_NATIVE=0` disables it, `=1` forces it (and raises instead of falling back). `SAGEATTN_ROCM_PV=fp8`
+makes `sageattn()` use FP8 P·V on gfx942 (default FP16, see accuracy below).
+
+**Accuracy** (`pytest tests/rocm`: output vs FP32 SDPA on inputs with a large per-channel K bias and outlier
+Q/K channels, B2 H6 N1037, as in the SageAttention papers' cosine-similarity / relative-L1 methodology):
+
+ACCURACY_TABLE
+
+**Kernel speed** (TFLOP/s = 4·B·H·N²·D / time, non-causal, bf16 in, HND; "full" includes quantization;
+best of 3 × N runs; the MI300X is a shared VM, numbers ±10%):
+
+SPEED_TABLE
+
+**End to end** (Wan2.1-T2V-1.3B, diffusers, 480×832, 33 frames, 20 steps, CFG 5, same seed):
+
+E2E_TABLE
+
+See [`ROCM_NOTES.md`](./ROCM_NOTES.md) for kernel entry points and design notes, `bench/rocm/` and
+`example/rocm/wan_e2e.py` to reproduce.
+
 ## Installation
 ### Base environment
 + `python>=3.9`   , `torch>=2.3.0`  , `triton>=3.0.0` 

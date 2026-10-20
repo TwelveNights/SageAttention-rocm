@@ -17,6 +17,11 @@ PACKAGE_NAME = "sageattn3"
 # SKIP_CUDA_BUILD: Intended to allow CI to use a simple `python setup.py sdist` run to copy over raw files, without any cuda compilation
 FORCE_BUILD = os.getenv("FAHOPPER_FORCE_BUILD", "FALSE") == "TRUE"
 SKIP_CUDA_BUILD = os.getenv("FAHOPPER_SKIP_CUDA_BUILD", "FALSE") == "TRUE"
+# ROCm: the FP4 kernels need Blackwell (sm_100/sm_120) tcgen05 / block-scaled MMA and cannot be built for AMD GPUs.
+# Install the Python package only; sageattn3_blackwell() then falls back to SageAttention2 (INT8) -- see api.py.
+if getattr(torch.version, "hip", None) is not None:
+    print("ROCm torch: SageAttention3's FP4 kernels are NVIDIA Blackwell-only; installing the fallback package only.")
+    SKIP_CUDA_BUILD = True
 # For CI, we want the option to build with C++11 ABI since the nvcr images use C++11 ABI
 FORCE_CXX11_ABI = os.getenv("FAHOPPER_FORCE_CXX11_ABI", "FALSE") == "TRUE"
 

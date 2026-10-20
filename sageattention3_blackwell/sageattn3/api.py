@@ -19,8 +19,15 @@ import triton.language as tl
 import torch.nn.functional as F
 from typing import Tuple
 from torch.nn.functional import scaled_dot_product_attention as sdpa
-import fp4attn_cuda
-import fp4quant_cuda
+try:
+    import fp4attn_cuda
+    import fp4quant_cuda
+    _FP4_AVAILABLE = True
+except ImportError:
+    # Not built: AMD GPUs (ROCm) and pre-Blackwell NVIDIA GPUs have no microscaling-FP4 matrix instructions.
+    # sageattn3_blackwell() falls back to SageAttention2 (INT8 Q.K^T), or to SDPA without it.
+    _FP4_AVAILABLE = False
+_FALLBACK_WARNED = False
 
 
 @triton.jit
@@ -128,7 +135,29 @@ def blockscaled_fp4_attn(qlist: Tuple,
     return fp4attn_cuda.fwd(qlist[0], klist[0], vlist[0], qlist[1], klist[1], vlist[1], delta_s, KL, None, softmax_scale, is_causal, per_block_mean, is_bf16)
 
 
+def _fallback(q, k, v, attn_mask, is_causal):
+    global _FALLBACK_WARNED
+    if not _FALLBACK_WARNED:
+        _FALLBACK_WARNED = True
+        import warnings
+        warnings.warn(
+            "sageattn3_blackwell: FP4 kernels unavailable (needs an NVIDIA Blackwell GPU and the compiled "
+            "extension); falling back to SageAttention2 (sageattention.sageattn, INT8 QK).",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    if attn_mask is None:
+        try:
+            from sageattention import sageattn
+            return sageattn(q, k, v, tensor_layout="HND", is_causal=is_causal)
+        except ImportError:
+            pass
+    return sdpa(q, k, v, attn_mask=attn_mask, is_causal=is_causal)
+
+
 def sageattn3_blackwell(q, k, v, attn_mask = None, is_causal = False, per_block_mean = True, **kwargs):
+    if not _FP4_AVAILABLE:
+        return _fallback(q, k, v, attn_mask, is_causal)
     if q.size(-1) >= 256:
         print(f"Unsupported Headdim {q.size(-1)}")
         return sdpa(q, k, v, is_causal = is_causal)

@@ -17,7 +17,7 @@ import torch
 import triton
 import triton.language as tl
 
-__all__ = ["quant_qk_int8", "quant_v_fp8", "padded_head_dim"]
+__all__ = ["quant_qk_int8", "quant_v_fp8", "transpose_v_fp16", "seq_mean", "padded_head_dim"]
 
 
 def padded_head_dim(d: int) -> int:
@@ -44,6 +44,7 @@ def _quant_int8_kernel(
     stride_sb,
     stride_sh,
     L,
+    NOUT,
     scale_mul,
     D: tl.constexpr,
     DP: tl.constexpr,
@@ -58,6 +59,7 @@ def _quant_int8_kernel(
     if VARLEN:
         start = tl.load(CuSeq + b).to(tl.int64)
         L = (tl.load(CuSeq + b + 1) - start).to(tl.int32)
+        NOUT = L
         if blk * BLK >= L:
             return
         sblk = tl.load(CuScale + b).to(tl.int64)
@@ -87,7 +89,10 @@ def _quant_int8_kernel(
     xq = x * inv
     xq += 0.5 * tl.where(xq >= 0, 1.0, -1.0)
     xq = tl.minimum(tl.maximum(xq, -127.0), 127.0)
-    tl.store(o_base + h * stride_oh + offs_n[:, None] * stride_on + offs_d[None, :], xq.to(tl.int8), mask=nmask[:, None])
+    # rows in [L, NOUT) are padding: written as zeros
+    tl.store(
+        o_base + h * stride_oh + offs_n[:, None] * stride_on + offs_d[None, :], xq.to(tl.int8), mask=(offs_n < NOUT)[:, None]
+    )
     tl.store(Scale + b * stride_sb + h * stride_sh + sblk + blk, scale)
 
 
@@ -102,14 +107,15 @@ def _seq_strides(x: torch.Tensor, tensor_layout: str):
     raise ValueError(f"Unknown tensor layout: {tensor_layout}")
 
 
-def _quant_one(x, mean, sm_scale, blk, tensor_layout, cu_seqlens=None, max_seqlen=None):
+def _quant_one(x, mean, sm_scale, blk, tensor_layout, cu_seqlens=None, max_seqlen=None, n_pad=None):
     d = x.shape[-1]
     dp = padded_head_dim(d)
     assert x.stride(-1) == 1, "last dim must be contiguous"
     if cu_seqlens is None:
         b, h, n, sxb, sxh, sxn = _seq_strides(x, tensor_layout)
-        out = torch.empty((b, h, n, dp), dtype=torch.int8, device=x.device)
-        nblk = triton.cdiv(n, blk)
+        n_out = max(n, n_pad or 0)
+        out = torch.empty((b, h, n_out, dp), dtype=torch.int8, device=x.device)
+        nblk = triton.cdiv(n_out, blk)
         scale = torch.empty((b, h, nblk), dtype=torch.float32, device=x.device)
         cu, cu_s = scale, scale  # unused
         grid = (nblk, h, b)
@@ -117,6 +123,7 @@ def _quant_one(x, mean, sm_scale, blk, tensor_layout, cu_seqlens=None, max_seqle
         ssb, ssh = scale.stride(0), scale.stride(1)
         length = n
     else:
+        n_out = 0
         total, h, _ = x.shape
         b = cu_seqlens.numel() - 1
         sxb, sxh, sxn = 0, x.stride(1), x.stride(0)
@@ -154,6 +161,7 @@ def _quant_one(x, mean, sm_scale, blk, tensor_layout, cu_seqlens=None, max_seqle
         ssb,
         ssh,
         length,
+        n_out,
         sm_scale,
         D=d,
         DP=dp,
@@ -177,6 +185,8 @@ def quant_qk_int8(
     cu_seqlens_k: torch.Tensor | None = None,
     max_seqlen_q: int | None = None,
     max_seqlen_k: int | None = None,
+    nq_pad: int | None = None,
+    nk_pad: int | None = None,
 ):
     """
     Per-block INT8 quantization of Q (pre-multiplied by ``sm_scale * log2(e)``)
@@ -187,6 +197,9 @@ def quant_qk_int8(
     ceil(Nq/BLKQ)]``, ``k_int8 [B, Hk, Nk, Dp]``, ``k_scale [B, Hk,
     ceil(Nk/BLKK)]`` (float32).
 
+    ``nq_pad``/``nk_pad`` (dense only) allocate that many rows instead,
+    zero-filling rows past the sequence (scales of all-padding blocks are 0).
+
     Varlen (``cu_seqlens_*`` given): ``q``/``k`` are ``[total, H, D]``,
     ``km`` is ``[1, Hk, D]``. Returns ``q_int8 [Hq, total_q, Dp]``,
     ``q_scale [Hq, nblk_q]``, ``k_int8``, ``k_scale`` likewise, plus the
@@ -194,8 +207,8 @@ def quant_qk_int8(
     """
     LOG2E = 1.4426950408889634
     if cu_seqlens_q is None:
-        qi, qs, _ = _quant_one(q, None, sm_scale * LOG2E, BLKQ, tensor_layout)
-        ki, ks, _ = _quant_one(k, km, 1.0, BLKK, tensor_layout)
+        qi, qs, _ = _quant_one(q, None, sm_scale * LOG2E, BLKQ, tensor_layout, n_pad=nq_pad)
+        ki, ks, _ = _quant_one(k, km, 1.0, BLKK, tensor_layout, n_pad=nk_pad)
         return qi, qs, ki, ks
     qi, qs, cqs = _quant_one(q, None, sm_scale * LOG2E, BLKQ, "NHD", cu_seqlens_q, max_seqlen_q)
     ki, ks, cks = _quant_one(k, km, 1.0, BLKK, "NHD", cu_seqlens_k, max_seqlen_k)
@@ -253,8 +266,7 @@ def quant_v_fp8(v: torch.Tensor, tensor_layout: str, fp8_dtype: torch.dtype, var
     b, h, n, sxb, sxh, sxn = _seq_strides(v4, layout)
     d = v4.shape[-1]
     dp = padded_head_dim(d)
-    seq_dim = 2 if layout == "HND" else 1
-    amax = v4.abs().amax(dim=seq_dim).to(torch.float32)  # [B, H, D]
+    amax = seq_absmax(v4, layout)  # [B, H, D]
     scale = torch.ones((b, h, dp), dtype=torch.float32, device=v.device)
     scale[..., :d] = torch.clamp(amax, min=1e-8) / fmax
     out = torch.empty((b, h, n, dp), dtype=fp8_dtype, device=v.device)
@@ -279,3 +291,108 @@ def quant_v_fp8(v: torch.Tensor, tensor_layout: str, fp8_dtype: torch.dtype, var
         num_warps=4,
     )
     return out, scale
+
+
+@triton.jit
+def _vt_kernel(
+    V,
+    Out,
+    stride_vb,
+    stride_vh,
+    stride_vn,
+    stride_ob,
+    stride_oh,
+    stride_od,
+    L,
+    D: tl.constexpr,
+    DP: tl.constexpr,
+    BLK: tl.constexpr,
+):
+    blk = tl.program_id(0)
+    h = tl.program_id(1).to(tl.int64)
+    b = tl.program_id(2).to(tl.int64)
+    offs_n = blk * BLK + tl.arange(0, BLK)
+    offs_d = tl.arange(0, DP)
+    m = (offs_n < L)[:, None] & (offs_d < D)[None, :]
+    x = tl.load(V + b * stride_vb + h * stride_vh + offs_n[:, None] * stride_vn + offs_d[None, :], mask=m, other=0.0)
+    r = offs_n % 16
+    pos = offs_n - r + (r >> 1) + 8 * (r & 1)  # [even keys | odd keys] within each 16-key block
+    tl.store(Out + b * stride_ob + h * stride_oh + offs_d[None, :] * stride_od + pos[:, None], x.to(tl.float16))
+
+
+def transpose_v_fp16(v: torch.Tensor, tensor_layout: str, n_pad: int) -> torch.Tensor:
+    """
+    V as fp16 ``[B, H, Dp, n_pad]`` (head dim major), keys reordered within
+    every 16-key block as [0, 2, ..., 14, 1, 3, ..., 15] and zero past the
+    sequence: the P.V operand layout of the native gfx11 kernel.
+    """
+    b, h, n, svb, svh, svn = _seq_strides(v, tensor_layout)
+    d = v.shape[-1]
+    dp = padded_head_dim(d)
+    assert n_pad % 64 == 0 and n_pad >= n
+    out = torch.empty((b, h, dp, n_pad), dtype=torch.float16, device=v.device)
+    BLK = 64
+    _vt_kernel[(n_pad // BLK, h, b)](
+        v, out, svb, svh, svn, out.stride(0), out.stride(1), out.stride(2), n, D=d, DP=dp, BLK=BLK, num_warps=4
+    )
+    return out
+
+
+@triton.jit
+def _colsum_kernel(X, Out, stride_xb, stride_xh, stride_xn, stride_ob, stride_oh, stride_os, L,
+                   D: tl.constexpr, DP: tl.constexpr, CH: tl.constexpr, BLK: tl.constexpr,
+                   ABSMAX: tl.constexpr = False):  # fmt: skip
+    sp = tl.program_id(0)
+    h = tl.program_id(1).to(tl.int64)
+    b = tl.program_id(2).to(tl.int64)
+    offs_d = tl.arange(0, DP)
+    acc = tl.zeros([DP], tl.float32)
+    base = X + b * stride_xb + h * stride_xh
+    for n0 in range(sp * CH, sp * CH + CH, BLK):
+        offs_n = n0 + tl.arange(0, BLK)
+        x = tl.load(base + offs_n[:, None] * stride_xn + offs_d[None, :],
+                    mask=(offs_n < L)[:, None] & (offs_d < D)[None, :], other=0.0)  # fmt: skip
+        if ABSMAX:
+            acc = tl.maximum(acc, tl.max(tl.abs(x.to(tl.float32)), axis=0))
+        else:
+            acc += tl.sum(x.to(tl.float32), axis=0)
+    tl.store(Out + b * stride_ob + h * stride_oh + sp * stride_os + offs_d, acc, mask=offs_d < D)
+
+
+def seq_mean(x: torch.Tensor, tensor_layout: str) -> torch.Tensor:
+    """
+    fp32 mean over the sequence, ``[B, H, D]`` -- what ``x.mean(dim=seq, dtype=torch.float32)`` computes, but
+    with one partial sum per chunk of rows (enough programs to fill the GPU) and a fixed-order second pass, so it
+    is deterministic and fast for both layouts (torch's reduction over the middle dim of a contiguous HND tensor
+    is several times slower).
+    """
+    if tensor_layout == "NHD":
+        return x.mean(dim=1, dtype=torch.float32)  # torch is as fast or faster here (MI300X)
+    b, h, n, sxb, sxh, sxn = _seq_strides(x, tensor_layout)
+    d = x.shape[-1]
+    dp = triton.next_power_of_2(d)
+    CH = 512 if n >= 8192 else 256
+    nsplit = triton.cdiv(n, CH)
+    part = torch.empty((b, h, nsplit, d), dtype=torch.float32, device=x.device)
+    _colsum_kernel[(nsplit, h, b)](
+        x, part, sxb, sxh, sxn, part.stride(0), part.stride(1), part.stride(2), n, D=d, DP=dp, CH=CH, BLK=64,
+        num_warps=4,
+    )  # fmt: skip
+    return part.sum(dim=2).div_(n)
+
+
+def seq_absmax(x: torch.Tensor, tensor_layout: str) -> torch.Tensor:
+    """fp32 ``x.abs().amax(dim=seq)``, ``[B, H, D]`` (chunked like :func:`seq_mean`)."""
+    if tensor_layout == "NHD":
+        return x.abs().amax(dim=1).to(torch.float32)
+    b, h, n, sxb, sxh, sxn = _seq_strides(x, tensor_layout)
+    d = x.shape[-1]
+    dp = triton.next_power_of_2(d)
+    CH = 512 if n >= 8192 else 256
+    nsplit = triton.cdiv(n, CH)
+    part = torch.empty((b, h, nsplit, d), dtype=torch.float32, device=x.device)
+    _colsum_kernel[(nsplit, h, b)](
+        x, part, sxb, sxh, sxn, part.stride(0), part.stride(1), part.stride(2), n, D=d, DP=dp, CH=CH, BLK=64,
+        ABSMAX=True, num_warps=4,
+    )  # fmt: skip
+    return part.amax(dim=2)
