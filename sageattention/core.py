@@ -44,10 +44,21 @@ try:
 except:
     SM90_ENABLED = False
 
-from .quant import per_block_int8 as per_block_int8_cuda
-from .quant import per_warp_int8 as per_warp_int8_cuda
-from .quant import sub_mean
-from .quant import per_channel_fp8
+try:
+    from .quant import per_block_int8 as per_block_int8_cuda
+    from .quant import per_warp_int8 as per_warp_int8_cuda
+    from .quant import sub_mean
+    from .quant import per_channel_fp8
+except ImportError:  # no compiled CUDA extension (e.g. ROCm builds)
+    per_block_int8_cuda = per_warp_int8_cuda = sub_mean = per_channel_fp8 = None
+
+# ROCm (AMD GPUs): every public entry point below dispatches to the Triton
+# backend in sageattention/rocm (INT8 QK, FP16 or -- on CDNA3 -- FP8 PV).
+# See ROCM_NOTES.md.
+from .rocm import arch as _rocm_arch
+_IS_ROCM = _rocm_arch.is_rocm()
+if _IS_ROCM:
+    from .rocm import api as _rocm_api
 
 from typing import Any, List, Literal, Optional, Tuple, Union
 import warnings
@@ -140,6 +151,11 @@ def sageattn(
     - All tensors must be on the same cuda device.
     """
         
+    if _IS_ROCM:
+        dev = q.device.index if q.device.index is not None else torch.cuda.current_device()
+        kwargs.setdefault("pv_dtype", _rocm_api.default_pv_dtype(dev))
+        return _rocm_api.sageattn_rocm(q, k, v, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, **kwargs)
+
     arch = get_cuda_arch_versions()[q.device.index]
     if arch == "sm80":
         return sageattn_qk_int8_pv_fp16_cuda(q, k, v, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32")
@@ -238,6 +254,9 @@ def sageattn_qk_int8_pv_fp16_triton(
     - All tensors must be on the same cuda device.
     - `smooth_k` will introduce slight overhead but will improve the accuracy under most circumstances.
     """
+
+    if _IS_ROCM:
+        return _rocm_api.sageattn_rocm(q, k, v, tensor_layout=tensor_layout, is_causal=is_causal, attn_mask=attn_mask, sm_scale=sm_scale, smooth_k=smooth_k, return_lse=return_lse, qk_quant_gran="per_block", pv_dtype="fp16")
 
     dtype = q.dtype
     assert q.is_cuda, "Input tensors must be on cuda."
@@ -396,6 +415,9 @@ def sageattn_varlen(
     - `smooth_k` will introduce slight overhead but will improve the accuracy under most circumstances.
     """
     
+    if _IS_ROCM:
+        return _rocm_api.sageattn_varlen_rocm(q, k, v, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seqlen_k, is_causal=is_causal, sm_scale=sm_scale, smooth_k=smooth_k, qk_quant_gran="per_block")
+
     dtype = q.dtype
     assert q.is_cuda, "Input tensors must be on cuda."
     assert dtype in [torch.float16, torch.bfloat16], "Input tensors must be in dtype of torch.float16 or torch.bfloat16"
@@ -536,6 +558,10 @@ def sageattn_qk_int8_pv_fp16_cuda(
     - All tensors must be on the same cuda device.
     - `smooth_k` will introduce slight overhead but will improve the accuracy under most circumstances.
     """
+
+    if _IS_ROCM:
+        # AMD matrix cores accumulate in FP32: every pv_accum_dtype maps to FP16 PV with an FP32 accumulator
+        return _rocm_api.sageattn_rocm(q, k, v, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, smooth_k=smooth_k, return_lse=return_lse, qk_quant_gran=qk_quant_gran, pv_dtype="fp16")
 
     dtype = q.dtype
     assert SM80_ENABLED, "SM80 kernel is not available. make sure you GPUs with compute capability 8.0 or higher."
@@ -720,6 +746,10 @@ def sageattn_qk_int8_pv_fp8_cuda(
     - All tensors must be on the same cuda device.
     - `smooth_k` will introduce slight overhead but will improve the accuracy under most circumstances.
     """
+
+    if _IS_ROCM:
+        # FP8 PV on CDNA3 (e4m3fnuz, per-channel V scales); RDNA3 has no FP8 and runs FP16 PV
+        return _rocm_api.sageattn_rocm(q, k, v, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, smooth_k=smooth_k, return_lse=return_lse, qk_quant_gran=qk_quant_gran, pv_dtype="fp8")
 
     dtype = q.dtype
     assert SM89_ENABLED, "SM89 kernel is not available. Make sure you GPUs with compute capability 8.9."
@@ -907,6 +937,9 @@ def sageattn_qk_int8_pv_fp8_cuda_sm90(
     - All tensors must be on the same cuda device.
     - `smooth_k` will introduce slight overhead but will improve the accuracy under most circumstances.
     """
+
+    if _IS_ROCM:
+        return _rocm_api.sageattn_rocm(q, k, v, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, smooth_k=smooth_k, return_lse=return_lse, qk_quant_gran=qk_quant_gran, pv_dtype="fp8")
 
     dtype = q.dtype
     assert SM90_ENABLED, "SM90 kernel is not available. Make sure you GPUs with compute capability 9.0."

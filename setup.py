@@ -29,6 +29,27 @@ SKIP_CUDA_BUILD = (
     or ("sdist" in sys.argv)
 )
 
+
+def _is_rocm_build():
+    """
+    ROCm (AMD) installs are pure Python + Triton (sageattention/rocm): nothing to compile.
+    Detected from the installed torch (needs --no-build-isolation) or SAGEATTN_ROCM=1; without
+    torch in the build environment, also when there is no CUDA toolkit at all.
+    """
+    if os.getenv("SAGEATTN_ROCM", "0").upper() in {"1", "TRUE", "YES"}:
+        return True
+    try:
+        import torch
+    except ImportError:
+        import shutil
+        return not (os.getenv("CUDA_HOME") or os.getenv("CUDA_PATH") or shutil.which("nvcc"))
+    return getattr(torch.version, "hip", None) is not None
+
+
+if not SKIP_CUDA_BUILD and _is_rocm_build():
+    print("ROCm / no CUDA toolkit: installing the pure-Python + Triton package (no CUDA extensions).")
+    SKIP_CUDA_BUILD = True
+
 ext_modules = []
 cmdclass = {}
 
