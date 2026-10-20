@@ -8,6 +8,7 @@ Benchmark SageAttention (ROCm backend) against FP16 flash attention baselines.
 Reports ms and TFLOP/s (4*B*H*Nq*Nk*D, halved for causal) per method:
   sage-fp16 / sage-fp8 : full sageattn call (quantization + attention; native kernel on gfx11)
   sage-triton          : full call, Triton kernel forced
+  upstream             : upstream's sageattention/triton kernels run unmodified on ROCm (full call)
   sage-*-kern          : attention kernel only, pre-quantized inputs
   triton-fa            : nunchaku-rocm's FP16 Triton flash attention (autotuned)
   sdpa                 : torch.nn.functional.scaled_dot_product_attention
@@ -125,6 +126,14 @@ def run_shape(args, B, H, N, D):
                 qi, ki, vi, qs, ks, o, QBLK=32, KBLK=KBLK, config=cfg, tensor_layout=layout, is_causal=causal, v_scale=vs
             )
             res[f"sage-{pv}-kern"] = timeit(fn, reps=reps)
+    if "upstream" in methods and layout == "HND" and not causal:  # (its causal kernel aborts ROCm Triton 3.6)
+        # upstream's own Triton SageAttention (sageattention/triton), unmodified, full call incl. quantization
+        from accuracy import upstream_triton
+
+        try:
+            res["upstream"] = timeit(lambda: upstream_triton(q, k, v, causal), reps=reps)
+        except Exception as e:  # noqa: BLE001
+            print(f"  upstream triton failed: {type(e).__name__}: {str(e)[:150]}")
     if "triton-fa" in methods and not causal:
         from nunchaku_triton_attn import attention_fp16
 

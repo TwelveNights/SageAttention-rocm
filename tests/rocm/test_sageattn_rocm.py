@@ -12,6 +12,7 @@ few heavy Q/K channels.
 """
 
 import math
+import sys
 import warnings
 
 import pytest
@@ -313,3 +314,19 @@ def test_native_lse_and_dispatch():
     o = sageattention.sageattn(q, k, v)
     assert ns.status().get(0) == "ok"
     assert torch.equal(o, ns.sageattn_native(q, k, v))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="torch.compile needs a host C++ compiler (none on the Windows box)")
+def test_torch_compile():
+    """Upstream supports torch.compile (non-cudagraph); the Triton path is traced, the native one graph-breaks."""
+
+    def f(q, k, v):
+        return sageattention.sageattn(q * 1.0, k, v, tensor_layout="NHD") * 2.0
+
+    q, k, v = realistic_qkv(1, 4, 4, 1000, 1000, 128, torch.bfloat16)
+    q, k, v = (x.transpose(1, 2).contiguous() for x in (q, k, v))
+    ref = f(q, k, v)
+    out = torch.compile(f)(q, k, v)
+    # inductor may reduce torch ops (e.g. the K mean) in another order: allow quantization-level differences
+    cos, l1, _ = metrics(out, ref)
+    assert cos > 0.99999 and l1 < 0.005, (cos, l1)

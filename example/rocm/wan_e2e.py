@@ -64,11 +64,18 @@ class AttnSwap:
         self.orig = tw.dispatch_attention_fn
         self.kind = kind
         self.calls = 0
+        self.self_calls = 0
+        self.dump = None  # {self-attention call index: name} -> captured Q/K/V (for bench/rocm/accuracy.py)
+        self.dumped = []
         tw.dispatch_attention_fn = self
 
     def __call__(self, query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, backend=None, **kw):
         # query/key/value: [B, N, H, D] (NHD)
         self.calls += 1
+        if key.shape[1] == query.shape[1]:
+            if self.dump is not None and self.self_calls in self.dump:
+                self.dumped.append(dict(name=self.dump[self.self_calls], q=query.cpu(), k=key.cpu(), v=value.cpu()))
+            self.self_calls += 1
         if self.kind == "sdpa" or attn_mask is not None:
             return self.orig(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal,
                              backend=backend, **kw)  # fmt: skip
@@ -122,7 +129,7 @@ def run(args):
     t_start = [time.perf_counter()]
 
     def denoise(steps):
-        g = torch.Generator(device="cuda").manual_seed(args.seed)
+        g = torch.Generator(device="cpu").manual_seed(args.seed)  # CPU noise: identical on every GPU / torch build
         return pipe(
             prompt_embeds=pe,
             negative_prompt_embeds=ne,
@@ -144,6 +151,11 @@ def run(args):
     t_start[0] = time.perf_counter()
     torch.cuda.reset_peak_memory_stats()
     step_times.clear()
+    if args.dump_qkv and swap is not None:
+        # self-attention calls: per step 30 blocks of the conditional pass, then 30 of the unconditional one
+        swap.self_calls = 0
+        swap.dump = {s * 60 + b: f"step{s} block{b}" for s, b in ((0, 0), (0, 15), (args.steps // 2, 5),
+                                                                   (args.steps // 2, 29), (args.steps - 1, 15))}  # fmt: skip
     t0 = time.perf_counter()
     latents = denoise(args.steps)
     torch.cuda.synchronize()
@@ -152,6 +164,9 @@ def run(args):
 
     os.makedirs(args.out, exist_ok=True)
     np.save(os.path.join(args.out, "latents.npy"), latents.float().cpu().numpy())
+    if args.dump_qkv and swap is not None:
+        torch.save(swap.dumped, args.dump_qkv)
+        print("dumped", len(swap.dumped), "Q/K/V sets to", args.dump_qkv)
     info = dict(
         attn=args.attn,
         gpu=torch.cuda.get_device_name(),
@@ -243,6 +258,7 @@ def main():
     p.add_argument("--no-decode", action="store_true", help="save latents only (decode later with --decode-only)")
     p.add_argument("--decode-only", help="decode <run dir>/latents.npy")
     p.add_argument("--verbose", action="store_true")
+    p.add_argument("--dump-qkv", help="save real self-attention Q/K/V of a few blocks/steps to this .pt file")
     args = p.parse_args()
     if args.decode_only:
         decode_only(args.decode_only)

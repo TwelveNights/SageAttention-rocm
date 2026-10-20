@@ -261,6 +261,7 @@ def _run(kern, q, k, v, tensor_layout, is_causal, sm_scale, return_lse, smooth_k
     return out
 
 
+@torch.compiler.disable  # ctypes launches: run eagerly (a clean graph break under torch.compile)
 def sageattn_native(q, k, v, tensor_layout="HND", is_causal=False, sm_scale=None, return_lse=False, smooth_k=True,
                     qk_quant_gran="per_warp", waves=None):  # fmt: skip
     """Run the native kernel unconditionally (raises if it is unavailable)."""
@@ -271,6 +272,7 @@ def sageattn_native(q, k, v, tensor_layout="HND", is_causal=False, sm_scale=None
                 qk_quant_gran, waves)  # fmt: skip
 
 
+@torch.compiler.disable
 def try_sageattn(q, k, v, tensor_layout, is_causal, sm_scale, return_lse, smooth_k, qk_quant_gran, attn_mask,
                  pv_fp8):  # fmt: skip
     """The native result, or ``None`` when the Triton kernel should run instead."""

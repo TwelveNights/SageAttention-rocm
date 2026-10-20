@@ -88,8 +88,10 @@ i.e. subtracting the per-channel mean of K over the sequence), FP32 online softm
 `qk_quant_gran` maps to the Q-scale block height (`per_block` 128 rows, `per_warp` 32, `per_thread` 16 --
 there are no NVIDIA warps / mma thread layouts to mirror). AMD matrix cores always accumulate in FP32, so
 `pv_accum_dtype` only selects FP8 vs FP16 P·V. Supported: NHD/HND (any strides, e.g. views of a fused QKV),
-fp16/bf16, head dims up to 256 (64/128 native on gfx11), causal, GQA/MQA, `attn_mask` (bool or additive;
-Triton kernel), `return_lse`, varlen, `qo_len != kv_len`.
+fp16/bf16, head dims up to 256 (33-128 on the native gfx11 kernel), causal, GQA/MQA, `attn_mask` (bool or
+additive; Triton kernel), `return_lse`, varlen, `qo_len != kv_len`, `torch.compile` (Triton path traced, native
+kernel graph-breaks). Tested on gfx942, gfx1100 and gfx1101; gfx90a / gfx950 / gfx12 use the same Triton code
+but are untested.
 
 **SageAttention3** (`sageattention3_blackwell/`, microscaling FP4) needs Blackwell's block-scaled FP4 tensor
 cores; no AMD GPU before CDNA4 has an equivalent, so it is not ported. On ROCm its `setup.py` installs the
@@ -108,19 +110,122 @@ no MSVC on Windows) in a few seconds, self-tested against the Triton kernel, and
 `SAGEATTN_NATIVE=0` disables it, `=1` forces it (and raises instead of falling back). `SAGEATTN_ROCM_PV=fp8`
 makes `sageattn()` use FP8 P·V on gfx942 (default FP16, see accuracy below).
 
-**Accuracy** (`pytest tests/rocm`: output vs FP32 SDPA on inputs with a large per-channel K bias and outlier
-Q/K channels, B2 H6 N1037, as in the SageAttention papers' cosine-similarity / relative-L1 methodology):
+**Accuracy** (`bench/rocm/accuracy.py`; output vs FP32 SDPA, cosine similarity and relative L1 as in the
+SageAttention papers; synthetic inputs have a large per-channel K bias and a few 6x outlier Q/K channels, like
+real DiT activations). `pytest tests/rocm` checks the same metrics over NHD/HND, fp16/bf16, head dims
+32-256, causal, GQA, masks, LSE, varlen and ragged lengths (115 pass on the RX 7800 XT (+1 skipped: torch.compile
+needs a host compiler on Windows), 70 + 70 gfx11-only skips on MI300X, 116 on the W7900).
 
-ACCURACY_TABLE
+Synthetic (B2 H8 N4096, bf16):
+
+| head dim, mask | method | MI300X cos sim | MI300X rel-L1 | RX 7800 XT cos sim | RX 7800 XT rel-L1 |
+| --- | --- | --- | --- | --- | --- |
+| 64, full | sage, FP16 P·V | 0.999913 | 0.0097 | 0.999920 | 0.0095 |
+| 64, full | sage, FP8 P·V (gfx942) | 0.999691 | 0.0215 | -- | -- |
+| 64, full | upstream's own Triton SageAttention, run unmodified | 0.999899 | 0.0104 | 0.999899 | 0.0106 |
+| 64, full | SDPA in bf16 (for scale) | 0.999999 | 0.0014 | 0.999999 | 0.0014 |
+| 128, full | sage, FP16 P·V | 0.999898 | 0.0107 | 0.999901 | 0.0106 |
+| 128, full | sage, FP8 P·V | 0.999652 | 0.0232 | -- | -- |
+| 128, causal | sage, FP16 P·V | 0.999902 | 0.0103 | 0.999905 | 0.0101 |
+| 128, causal | sage, FP8 P·V | 0.999643 | 0.0235 | -- | -- |
+
+On the 7800 XT the native gfx11 kernel and the Triton kernel give the same metrics to 6 digits (same
+quantization). The default `sageattn()` granularity here is `per_warp` (32-row Q scales), which is why it is a
+little more accurate than upstream's per-block Triton path. Upstream's Triton kernels themselves only compile on
+ROCm Triton 3.6 for head dim 64 (head dim 128 and the causal kernel crash the AMD pipeliner).
+
+Real activations -- self-attention Q/K/V captured from Wan2.1-T2V-1.3B (14040 tokens, 12 heads, d=128) at 5
+(step, block) points of a 20-step run (`wan_e2e.py --dump-qkv`, `accuracy.py --qkv`), MI300X:
+
+| method | cos sim (min..max) | rel-L1 (min..max) |
+| --- | --- | --- |
+| sage, FP16 P·V | 0.99993 .. 0.99998 | 0.0037 .. 0.0100 |
+| sage, FP8 P·V | 0.99974 .. 0.99998 | 0.0062 .. 0.0201 |
+| SDPA in bf16 | 0.999998 .. 0.999999 | 0.0011 .. 0.0017 |
+
+FP8 P·V keeps P in e4m3 (3 mantissa bits), as upstream's FP8 kernels do; it is ~2x the FP16 path's error, so
+`sageattn()` defaults to FP16 P·V on gfx942 and FP8 is opt-in (`SAGEATTN_ROCM_PV=fp8` or the `*_fp8_*` APIs).
 
 **Kernel speed** (TFLOP/s = 4·B·H·N²·D / time, non-causal, bf16 in, HND; "full" includes quantization;
 best of 3 × N runs; the MI300X is a shared VM, numbers ±10%):
 
-SPEED_TABLE
+MI300X (gfx942, ROCm 7.2, torch 2.10, Triton 3.6; aiter 0.1.7 `flash_attn_func` = CK/asm FlashAttention v3):
+
+| shape (B, H, N, D) | sage FP16 P·V | sage FP8 P·V | aiter bf16 | aiter FP8 (per-tensor) | Triton FA fp16 (nunchaku) | torch SDPA |
+| --- | --- | --- | --- | --- | --- | --- |
+| FLUX 1024² (1, 24, 4608, 128) | 0.57 ms (459) | 0.51 ms (516) | 0.58 ms (451) | 0.42 ms (621) | 0.84 ms (311) | 0.85 ms (307) |
+| SD3-like (2, 24, 4096, 64) | 0.57 ms (361) | 0.55 ms (375) | 0.66 ms (313) | -- | 0.76 ms (271) | 0.72 ms (288) |
+| FLUX 2048² (1, 24, 16896, 128) | 6.67 ms (526) | 5.36 ms (654) | 7.30 ms (481) | 5.34 ms (658) | 10.85 ms (323) | 11.38 ms (308) |
+| Wan 1.3B 480p (1, 12, 32760, 128) | 12.6 ms (524) | 10.4 ms (636) | 14.2 ms (465) | 10.7 ms (615) | 19.3 ms (342) | 22.3 ms (296) |
+| Wan 14B 480p (1, 40, 32760, 128) | 38.7 ms (569) | 31.4 ms (700) | 40.7 ms (540) | 34.3 ms (640) | 58.2 ms (377) | 68.5 ms (321) |
+| HunyuanVideo-like (1, 24, 45000, 128) | 43.7 ms (569) | 35.8 ms (694) | 45.8 ms (544) | 37.2 ms (668) | 65.6 ms (379) | 77.6 ms (321) |
+| Wan 14B 720p (1, 40, 75600, 128) | 196 ms (598) | 161 ms (729) | 215 ms (545) | 179 ms (653) | 302 ms (388) | 349 ms (335) |
+
+(TFLOP/s in parentheses. "aiter FP8" is a speed reference only: per-tensor FP8 Q/K/V cast outside the timed
+region, no scaling. NHD inputs run at the same speed.) Upstream's own Triton SageAttention, where it compiles
+(D=64): 0.71 ms (289) on the SD3-like shape.
+
+RX 7800 XT (gfx1101, Windows 11, ROCm 7.2.1, torch 2.9.1, triton-windows 3.6; "native" = the hipRTC kernel,
+which `sageattn()` uses on gfx11):
+
+| shape (B, H, N, D) | sage native | sage Triton | Triton FA fp16 (nunchaku) | torch SDPA |
+| --- | --- | --- | --- | --- |
+| FLUX 1024² (1, 24, 4608, 128) | 4.93 ms (53) | 5.91 ms (44) | 6.55 ms (40) | 59.2 ms (4) |
+| SD3-like (2, 24, 4096, 64) | 4.23 ms (49) | 5.09 ms (41) | 5.31 ms (39) | |
+| FLUX 2048² (1, 24, 16896, 128) | 63.1 ms (56) | 75.0 ms (47) | 81.6 ms (43) | |
+| Wan 1.3B 480p 41f (1, 12, 16380, 128) | 30.0 ms (55) | 36.6 ms (45) | 44.4 ms (37) | |
+| Wan 1.3B 480p 81f (1, 12, 32760, 128) | 118.7 ms (56) | 144.6 ms (46) | 166.8 ms (40) | |
+| same, NHD layout | 118.9 ms (55) | 146.6 ms (45) | | |
+| (1, 24, 16384, 128) | 59.8 ms (55) | 70.5 ms (47) | 76.7 ms (43) | |
+| causal (1, 24, 4608, 128) | 2.76 ms (47) | 3.29 ms (40) | | |
+| causal (1, 12, 16380, 128) | 16.3 ms (50) | 18.7 ms (44) | | |
+
+Radeon PRO W7900 (gfx1100, Linux, ROCm 7.2.2 driver / torch 2.10 ROCm 7.0): native 66-87 TFLOP/s, Triton
+sage 59-70, Triton FA 53-64, torch SDPA 22-23 on the same shapes (e.g. Wan 1.3B 81f: 84-90 ms native,
+98-107 ms Triton sage, 114-123 ms Triton FA, 292 ms SDPA; two sessions).
+
+RDNA3's WMMA runs INT8 at the *same* rate as FP16 (no FP8 at all), so INT8 Q·K^T buys no matrix throughput
+there; the gfx11 speedup comes from the hand-written kernel (~75% of the 7800 XT's 74.6 TFLOP/s FP16 boost-clock peak
+at large video shapes, 56 TFLOP/s; ~71% at FLUX 1024²).
 
 **End to end** (Wan2.1-T2V-1.3B, diffusers, 480×832, 33 frames, 20 steps, CFG 5, same seed):
 
-E2E_TABLE
+Prompts encoded once with UMT5-XXL; initial noise from a CPU generator, so runs on different GPUs start from
+identical latents. "PSNR vs reference" compares the decoded 33-frame video with the MI300X bf16-SDPA run.
+
+| GPU | attention | denoise (20 steps) | per step | speedup | PSNR vs reference | latent cos |
+| --- | --- | --- | --- | --- | --- | --- |
+| RX 7800 XT | Triton FA fp16 (nunchaku) | 85.9 s | 4.20 s | 1.00x | 29.81 dB | 0.9975 |
+| RX 7800 XT | **SageAttention (native)** | **70.9 s** | **3.52 s** | **1.21x** | 26.80 dB | 0.9943 |
+| W7900 | torch SDPA | 103.6 s | 5.19 s | 0.62x | 28.94 dB | 0.9964 |
+| W7900 | Triton FA fp16 | 64.2 s | 3.22 s | 1.00x | 32.63 dB | 0.9989 |
+| W7900 | **SageAttention (native)** | **55.3 s** | **2.78 s** | **1.16x** | 29.83 dB | 0.9971 |
+| MI300X | torch SDPA (bf16) | 12.1 s | 0.55 s | 1.00x | (reference) | 1 |
+| MI300X | Triton FA fp16 | 11.6 s | 0.58 s | 1.04x | 30.25 dB | 0.9976 |
+| MI300X | aiter FA (bf16) | 8.3 s | 0.41 s | 1.46x | 27.58 dB | 0.9943 |
+| MI300X | **SageAttention, FP16 P·V** | **8.0 s** | **0.40 s** | **1.51x** | 28.69 dB | 0.9964 |
+| MI300X | SageAttention, FP8 P·V | 9.7 s | 0.48 s | 1.26x | 25.94 dB | 0.9925 |
+
+Diffusion sampling amplifies any rounding difference, so the useful yardstick is the spread between *exact*
+attention implementations: they land 27.6-32.6 dB from the reference (SDPA itself on the W7900: 28.9 dB), and
+SageAttention lands at 26.8-29.8 dB (the same kernel on two RDNA3 boards differs by 27.3 dB from itself); the
+frames show the same scene, composition and motion (`frame016.png` of each run). At 81 frames (32760 tokens, 10 steps) the 7800 XT goes from 154.4 s to 123.7 s (1.25x). Peak VRAM while
+denoising is unchanged (3.9 GiB at 33 frames, 4.8 GiB at 81). MI300X timings are on a shared VM (±10%).
+
+ComfyUI: `example/rocm/comfyui_check.py` imports ComfyUI with `--use-sage-attention` and checks that
+`optimized_attention` resolves to `attention_sage` and runs this package unchanged (MI300X: 0.65 vs 0.98 ms
+FLUX 1024², 2.4 vs 4.7 ms Wan 480p 33f against `attention_pytorch`; note ComfyUI calls `sageattn` with
+`smooth_k=False`).
+
+**Summary.** Fastest of everything measured vs nunchaku's Triton FA and torch SDPA on all three GPUs; on MI300X
+the default (FP16 P·V) path is competitive with aiter bf16 (within noise at FLUX 1024², ~10% ahead at long video
+shapes) but slower than aiter's per-tensor FP8 kernel, and sage FP8 P·V beats aiter FP8 only at >= ~32K tokens.
+
+**Limitations / not done.** Causal attention at short lengths is slower than aiter on MI300X (B4 H32 N4096:
+1.67 ms vs 1.27 ms for aiter bf16; at H32 N16384 4.86 vs 4.69 ms), since only the non-causal path was tuned for DiTs.
+On RDNA3, INT4 Q·K^T (SageAttention2's 4-bit variant, `v_wmma_i32_16x16x16_iu4` at 2x the INT8 rate) could
+shorten the Q·K^T half further but costs accuracy and is not in upstream's current API, so it is not
+implemented. FP8 P·V is opt-in (see accuracy). SageAttention3 is not portable (above).
 
 See [`ROCM_NOTES.md`](./ROCM_NOTES.md) for kernel entry points and design notes, `bench/rocm/` and
 `example/rocm/wan_e2e.py` to reproduce.

@@ -1,6 +1,8 @@
 # SageAttention on ROCm -- notes for kernel reuse
 
 Status: **working and validated** on MI300X (gfx942), RX 7800 XT (gfx1101) and Radeon PRO W7900 (gfx1100).
+`pytest tests/rocm`: 116 passed on the W7900, 70 + 70 gfx11-only skips on MI300X, 115 on the 7800 XT (the
+torch.compile test is skipped on Windows). Numbers, accuracy and Wan2.1 end-to-end results: README "AMD GPUs (ROCm)".
 Pure Python + Triton, plus one HIP kernel for RDNA3
 compiled at runtime with hipRTC (no build step, no hipcc/MSVC). Tests: `pytest tests/rocm`.
 

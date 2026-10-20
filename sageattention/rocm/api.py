@@ -156,6 +156,13 @@ def sageattn_rocm(
     if is_causal:
         assert attn_mask is None, "Mask should be None for causal attention."
 
+    if q.numel() == 0:  # no queries (e.g. an empty batch): nothing to launch
+        o = torch.empty_like(q)
+        if return_lse:
+            b, nq, hq = q.shape[0], q.shape[seq_dim], q.shape[nh_dim]
+            return o, torch.empty((b, hq, nq), dtype=torch.float32, device=q.device)
+        return o
+
     pv_fp8 = _want_fp8(pv_dtype, dev)
     if _native and config is None:
         # hand-written gfx11 kernel (native/sage_gfx11.hip); None -> not applicable, use Triton
