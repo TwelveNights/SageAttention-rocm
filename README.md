@@ -1,169 +1,258 @@
-# SageAttention
-<!-- We are continuously updating more features. You could **Star** and **Watch** our repository to stay updated.
+# SageAttention for AMD GPUs (ROCm)
 
---- -->
-This repository provides the official implementation of SageAttention, SageAttention2, and SageAttention2++, which achieve surprising speedup on most GPUs without lossing accuracy across all models in a plug-and-play way.
-
-**SageAttention: Accurate 8-Bit Attention for Plug-and-play Inference Acceleration**  
-Jintao Zhang, Jia Wei, Haofeng Huang, Pengle Zhang, Jun Zhu, Jianfei Chen  
-Paper: https://arxiv.org/abs/2410.02367
-
-**SageAttention2: Efficient Attention with Thorough Outlier Smoothing and Per-thread INT4 Quantization**  
-Jintao Zhang, Haofeng Huang, Pengle Zhang, Jia Wei, Jun Zhu, Jianfei Chen  
-Paper: https://arxiv.org/abs/2411.10958
-
-**SageAttention3: Microscaling FP4 Attention for Inference and An Exploration of 8-Bit Training**  
-Jintao Zhang, Jia Wei, Haoxu Wang, Pengle Zhang, Xiaoming Xu, Haofeng Huang, Kai Jiang, Jianfei Chen, Jun Zhu  
-Paper: https://arxiv.org/abs/2505.11594
-
-
-![Local Image](./assets/2.png)
-*Note: [SageAttention2++](https://arxiv.org/pdf/2505.21136) achieves higher speed while maintaining the same accuracy performance.*
-
-## Current Features
-<!-- This is a beta release of SageAttention2. We welcome any feedback on accuracy, performance issues, bugs, feature requests, or suggestions. Please feel free to open an issue or launch a pull request! -->
-
-+ Optmized kernels for **Ampere, Ada and Hopper GPUs.**
-+ INT8 quantization and smoothing for $QK^\top$ with support for varying granularities.
-+ FP8 quantization for $PV$, and FP16 accumulator for FP8/FP16 $PV$.
-+ Two-level accumulation strategy for $PV$ to improve accuracy in FP8 MMA and WGMMA.
-+ Support `torch.compile` with non-cudagraphs mode and distributed inference.
-
-
-## Project Updates
-- [2025-09-27]: 🎉 [SageAttention3](https://arxiv.org/abs/2505.11594) is accepted by NeurIPS 2025 as a **Spotlight** paper! 
-- [2025-09-27]: The code of [SageAttention3](https://arxiv.org/abs/2505.11594) is released in this repository at  [sageattention3_blackwell](./sageattention3_blackwell/). We would still greatly appreciate it if you could take a moment to fill out the Form in [Huggingface](https://huggingface.co/jt-zhang/SageAttention3). Please note that since SageAttention2 is more accurate, we still recommend using SageAttention2 for precision-sensitive applications.
-- [2025-07-01]: The code of [SageAttention2++](https://arxiv.org/pdf/2505.21136) is released in this repository. We would still greatly appreciate it if you could take a moment to fill out the Form in [Huggingface](https://huggingface.co/jt-zhang/SageAttention2_plus). Thank you very much!
-
-![Local Image](./assets/5090_sageattn2++.png)
-
-![Local Image](./assets/4090_sageattn2++.png)
-
-- [2025-06-19]: [Sparse SageAttention1 API](https://github.com/jt-zhang/Sparse_SageAttention_API) and [Sparse SageAttention2 API](https://github.com/thu-ml/SpargeAttn) can compute attention with any block sparse pattern very fast.
-- [2025-05-02]: 🎉SageAttention2 and [SpargeAttn](https://github.com/thu-ml/SpargeAttn) are accepted by ICML 2025! 
-- [2025-02-25]: 🔥 We release [SpargeAttn](https://github.com/thu-ml/SpargeAttn), a sparse attention based on SageAttention2, which could acclerate any model without training.
-- [2025-02-15]: 🔥 The compilation code is updated to support RTX5090! On RTX5090, SageAttention reaches 560T, 2.7x faster than FlashAttention2!
-- [2025-01-28]: 🔥⚡SageAttention is now available on Hopper GPUs (H100, H800, H20)! It matches the speed of FlashAttention3-FP8 but offers **much better accuracy!**
-
-| **FlashAttention2** | **FlashAttention3** | **FlashAttention3-FP8** | **SageAttention** |
-|----------------------|----------------------|----------------------|----------------------|
-| ![FlashAttention2](assets/cogvideox1.5_fa2_example.gif) | ![FlashAttention3](assets/cogvideox1.5_fa3_example.gif)  | ![FlashAttention3-FP8](assets/cogvideox1.5_fa3fp8_example.gif) | ![SageAttention](assets/cogvideox1.5_sage_example.gif) |
-| **25'34''** | **17'32''** | **12'14''** | **12'07''** |
-
-*Results for [CogVideoX1.5-5B](https://huggingface.co/THUDM/CogVideoX1.5-5B) on NVIDIA H20 GPU*
-
-![Local Image](./assets/H100_hd128.png)
-
-![Local Image](./assets/H20_hd128.png)
-
-- [2025-01-24]: 🎉SageAttention is accepted by ICLR 2025! 
-- [2024-12-20]: 🔥Update the [SageAttention2 Paper](https://arxiv.org/abs/2411.10958).   
-
-- [2024-12-20]: 🔥Release SageAttention 2.0.1 Beta! In this version, we introduce a new feature: per-thread quantization, which offers finer granularity while maintaining hardware efficiency.
-- [2024-11-21]: 🔥SageAttention 2.0.0 beta is released! Now SageAttention has measured speedup on L20, L40, A100, A800, and A6000, RTX3090 and RTX4090.
-- [2024-11-12]: Support for `sageattn_varlen` is available now.
-- [2024-11-11]: Support for different sequence lengths between `q` and `k,v`,  `(batch_size, head_num, seq_len, head_dim)` or `(batch_size, seq_len, head_num, head_dim)` input shapes, and `group-query attention` is available now.
-
-
-## AMD GPUs (ROCm)
-
-> This section documents the ROCm port on the `rocm` branch of this fork (not upstream). Everything below is
-> new code under `sageattention/rocm/`; the CUDA paths are untouched.
-
-On a ROCm build of PyTorch every public entry point -- `sageattn`, `sageattn_qk_int8_pv_fp16_triton`,
-`sageattn_qk_int8_pv_fp16_cuda`, `sageattn_qk_int8_pv_fp8_cuda`, `sageattn_qk_int8_pv_fp8_cuda_sm90`,
-`sageattn_varlen` -- keeps its signature and dispatches to the AMD backend, so callers such as ComfyUI
-(`--use-sage-attention`) and diffusers (`transformer.set_attention_backend("sage")`) work unchanged.
-
-**What runs where**
+This is a ROCm port of [SageAttention](https://github.com/thu-ml/SageAttention) (thu-ml), the 8-bit
+"quantize Q·K^T to INT8" attention that speeds up diffusion and video models as a drop-in replacement
+for FlashAttention / SDPA. The `rocm` branch adds an AMD backend under `sageattention/rocm/` and leaves
+the public API unchanged, so anything that already calls `sageattention.sageattn` -- ComfyUI's
+`--use-sage-attention`, diffusers' `set_attention_backend("sage")`, your own code -- runs on Radeon and
+Instinct GPUs without modification. The original CUDA code paths are untouched; the upstream README is
+kept as [README_upstream.md](README_upstream.md).
 
 | GPU | Q·K^T | P·V | Kernel |
 | --- | --- | --- | --- |
-| CDNA3 (MI300X, gfx942) | INT8 (MFMA i8) | FP16, or FP8 e4m3**fnuz** with `pv_dtype="fp8"` / the `*_fp8_*` entry points | Triton (`sageattention/rocm/attn.py`) |
-| RDNA3 (RX 7000 / W7000, gfx11) | INT8 (WMMA iu8) | FP16 (RDNA3 has no FP8) | hand-written HIP kernel compiled at runtime with hipRTC (`sageattention/rocm/native/sage_gfx11.hip`), Triton fallback |
-| other AMD GPUs | INT8 | FP16 | Triton |
+| RDNA3: Radeon RX 7000 / PRO W7000 (gfx11; tested gfx1100, gfx1101) | INT8 (WMMA) | FP16 | hand-written HIP kernel, compiled at first use with hipRTC (no compiler toolchain needed); Triton fallback |
+| CDNA3: Instinct MI300X (gfx942) | INT8 (MFMA) | FP16, or FP8 (e4m3fnuz) opt-in | Triton |
+| other AMD GPUs supported by Triton (gfx90a, gfx950, RDNA4, ...) | INT8 | FP16 | Triton (untested) |
 
-Quantization follows upstream: per-block INT8 Q (pre-scaled by `sm_scale·log2 e`) and K (after `smooth_k`,
-i.e. subtracting the per-channel mean of K over the sequence), FP32 online softmax in the exp2 domain.
-`qk_quant_gran` maps to the Q-scale block height (`per_block` 128 rows, `per_warp` 32, `per_thread` 16 --
-there are no NVIDIA warps / mma thread layouts to mirror). AMD matrix cores always accumulate in FP32, so
-`pv_accum_dtype` only selects FP8 vs FP16 P·V. Supported: NHD/HND (any strides, e.g. views of a fused QKV),
-fp16/bf16, head dims up to 256 (33-128 on the native gfx11 kernel), causal, GQA/MQA, `attn_mask` (bool or
-additive; Triton kernel), `return_lse`, varlen, `qo_len != kv_len`, `torch.compile` (Triton path traced, native
-kernel graph-breaks). Tested on gfx942, gfx1100 and gfx1101; gfx90a / gfx950 / gfx12 use the same Triton code
-but are untested.
+Install is pure Python: nothing is compiled at install time, and it works on **Linux and native
+Windows** (AMD's ROCm PyTorch wheels for Windows plus `triton-windows`).
 
-**SageAttention3** (`sageattention3_blackwell/`, microscaling FP4) needs Blackwell's block-scaled FP4 tensor
-cores; no AMD GPU before CDNA4 has an equivalent, so it is not ported. On ROCm its `setup.py` installs the
-Python package only and `sageattn3_blackwell()` falls back to `sageattention.sageattn` (INT8) with a one-time
-warning.
+Validated on:
 
-**Install** (pure Python + Triton, nothing is compiled at install time):
+| GPU | OS | Software |
+| --- | --- | --- |
+| Radeon RX 7800 XT 16 GB (gfx1101) | Windows 11 | ROCm 7.2.1 PyTorch wheels (torch 2.9.1), triton-windows 3.6.0.post26 |
+| Radeon PRO W7900 48 GB (gfx1100) | Ubuntu 24.04 | ROCm 7.2.2 driver, torch 2.10.0+rocm7.0, Triton 3.6 |
+| Instinct MI300X (gfx942) | Linux | ROCm 7.2, torch 2.10.0+rocm7.0, Triton 3.6 |
+
+Headline numbers (details and baselines in [Results](#results)):
+
+- **ComfyUI, Wan2.1 T2V 1.3B** (832x480, 33 frames, 20 steps): 2.15x faster sampling than ComfyUI's default attention on the RX 7800 XT
+  (Windows; 7.33 -> 3.40 s/step) and 1.95x on the Radeon PRO W7900 (Linux; 5.16 -> 2.65 s/step), with
+  `--use-sage-attention` and no other change.
+- **Kernel**: on RDNA3 the native kernel runs at 53-56 TFLOP/s on the RX 7800 XT, 1.2-1.4x nunchaku-rocm's
+  FP16 Triton flash attention and 3.5x PyTorch SDPA on Windows (FLUX 1024² shape, SDPA with
+  `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`; 12x without); on MI300X it is on par with
+  or ahead of aiter's bf16 FlashAttention (CK/assembly) and slower than aiter's FP8 kernel.
+- **diffusers, Wan2.1 T2V 1.3B**: 1.21x (33 frames) to 1.25x (81 frames) end to end on the RX 7800 XT
+  against the Triton flash attention, 1.51x against SDPA on MI300X.
+- **Accuracy**: output cosine similarity >= 0.9999 against FP32 attention on synthetic DiT-like inputs and
+  >= 0.99993 on real Wan2.1 activations, as upstream.
+
+## Contents
+
+- [Install](#install): [Linux](#linux) · [Windows](#windows) · [check the install](#check-the-install)
+- [ComfyUI](#comfyui)
+- [Python and diffusers](#python-and-diffusers)
+- [Results](#results)
+- [Validation and benchmark scripts](#validation-and-benchmark-scripts)
+- [Limitations](#limitations)
+- [Configuration](#configuration)
+- [Credits and license](#credits-and-license)
+
+## Install
+
+Requirements: a ROCm build of PyTorch (>= 2.6; tested 2.9.1 and 2.10.0) and Triton (Linux: the `triton`
+that comes with ROCm PyTorch; Windows: `triton-windows`). Install SageAttention **into the same Python
+environment** that runs your model or ComfyUI, and never let pip replace your ROCm PyTorch -- install with
+`--no-deps` (SageAttention needs nothing beyond torch and triton).
+
+The package is the usual `sageattention` 2.2.0 (same name and API as upstream). `setup.py` detects the
+ROCm build of PyTorch and skips the CUDA extensions; set `SAGEATTN_ROCM=1` to force that if the detection
+cannot import torch (e.g. on a machine that also has an NVIDIA CUDA toolkit).
+
+### Linux
 
 ```bash
-pip install --no-build-isolation .     # detects ROCm torch (or set SAGEATTN_ROCM=1) and skips the CUDA extensions
+# inside the venv / conda env that has ROCm PyTorch (e.g. from https://download.pytorch.org/whl/rocm7.0)
+python -c "import torch, triton; print(torch.__version__, torch.version.hip, triton.__version__)"
+
+git clone -b rocm https://github.com/TwelveNights/SageAttention-rocm.git
+pip install --no-deps --no-build-isolation ./SageAttention-rocm
+# with uv:  uv pip install --python /path/to/venv/bin/python --no-deps ./SageAttention-rocm
 ```
 
-The gfx11 kernel is compiled on first use with hipRTC from the ROCm runtime torch already loaded (no hipcc,
-no MSVC on Windows) in a few seconds, self-tested against the Triton kernel, and cached under
-`$SAGEATTN_CACHE_DIR` (default `~/.cache/sageattention` / `%LOCALAPPDATA%\sageattention\cache`).
-`SAGEATTN_NATIVE=0` disables it, `=1` forces it (and raises instead of falling back). `SAGEATTN_ROCM_PV=fp8`
-makes `sageattn()` use FP8 P·V on gfx942 (default FP16, see accuracy below).
+### Windows
 
-**Accuracy** (`bench/rocm/accuracy.py`; output vs FP32 SDPA, cosine similarity and relative L1 as in the
-SageAttention papers; synthetic inputs have a large per-channel K bias and a few 6x outlier Q/K channels, like
-real DiT activations). `pytest tests/rocm` checks the same metrics over NHD/HND, fp16/bf16, head dims
-32-256, causal, GQA, masks, LSE, varlen and ragged lengths (115 pass on the RX 7800 XT (+1 skipped: torch.compile
-needs a host compiler on Windows), 70 + 70 gfx11-only skips on MI300X, 116 on the W7900).
+Native Windows works with AMD's ROCm PyTorch wheels (ROCm 7.x for Windows, RX 7000 / RX 9000 series)
+and [`triton-windows`](https://github.com/woct0rdho/triton-windows). Use 3.6 or newer (tested:
+3.6.0.post26).
 
-Synthetic (B2 H8 N4096, bf16):
+**ComfyUI Windows portable for AMD** (`ComfyUI_windows_portable_amd`, ships `python_embeded` with ROCm
+PyTorch), from the folder that contains `python_embeded`:
 
-| head dim, mask | method | MI300X cos sim | MI300X rel-L1 | RX 7800 XT cos sim | RX 7800 XT rel-L1 |
-| --- | --- | --- | --- | --- | --- |
-| 64, full | sage, FP16 P·V | 0.999913 | 0.0097 | 0.999920 | 0.0095 |
-| 64, full | sage, FP8 P·V (gfx942) | 0.999691 | 0.0215 | -- | -- |
-| 64, full | upstream's own Triton SageAttention, run unmodified | 0.999899 | 0.0104 | 0.999899 | 0.0106 |
-| 64, full | SDPA in bf16 (for scale) | 0.999999 | 0.0014 | 0.999999 | 0.0014 |
-| 128, full | sage, FP16 P·V | 0.999898 | 0.0107 | 0.999901 | 0.0106 |
-| 128, full | sage, FP8 P·V | 0.999652 | 0.0232 | -- | -- |
-| 128, causal | sage, FP16 P·V | 0.999902 | 0.0103 | 0.999905 | 0.0101 |
-| 128, causal | sage, FP8 P·V | 0.999643 | 0.0235 | -- | -- |
+```bat
+python_embeded\python.exe -c "import torch; print(torch.__version__, torch.version.hip)"
+python_embeded\python.exe -m pip install "triton-windows>=3.6"
+git clone -b rocm https://github.com/TwelveNights/SageAttention-rocm.git
+python_embeded\python.exe -m pip install --no-deps --no-build-isolation .\SageAttention-rocm
+```
 
-On the 7800 XT the native gfx11 kernel and the Triton kernel give the same metrics to 6 digits (same
-quantization). The default `sageattn()` granularity here is `per_warp` (32-row Q scales), which is why it is a
-little more accurate than upstream's per-block Triton path. Upstream's Triton kernels themselves only compile on
-ROCm Triton 3.6 for head dim 64 (head dim 128 and the causal kernel crash the AMD pipeliner).
+If `--no-build-isolation` complains about a missing `setuptools`, drop the flag and run `set SAGEATTN_ROCM=1`
+first (the isolated build cannot import torch to detect ROCm).
 
-Real activations -- self-attention Q/K/V captured from Wan2.1-T2V-1.3B (14040 tokens, 12 heads, d=128) at 5
-(step, block) points of a 20-step run (`wan_e2e.py --dump-qkv`, `accuracy.py --qkv`), MI300X:
+**Your own venv** (what the RX 7800 XT numbers below were measured with), e.g. with AMD's wheels:
 
-| method | cos sim (min..max) | rel-L1 (min..max) |
-| --- | --- | --- |
-| sage, FP16 P·V | 0.99993 .. 0.99998 | 0.0037 .. 0.0100 |
-| sage, FP8 P·V | 0.99974 .. 0.99998 | 0.0062 .. 0.0201 |
-| SDPA in bf16 | 0.999998 .. 0.999999 | 0.0011 .. 0.0017 |
+```powershell
+# torch / torchvision / rocm_sdk from AMD's index for your GPU and ROCm version, then:
+pip install "triton-windows>=3.6"
+pip install --no-deps --no-build-isolation .\SageAttention-rocm
+```
 
-FP8 P·V keeps P in e4m3 (3 mantissa bits), as upstream's FP8 kernels do; it is ~2x the FP16 path's error, so
-`sageattn()` defaults to FP16 P·V on gfx942 and FP8 is opt-in (`SAGEATTN_ROCM_PV=fp8` or the `*_fp8_*` APIs).
+On RDNA3 the native kernel is compiled on first use with hipRTC (`hiprtc*.dll` from the ROCm runtime that
+PyTorch loaded -- no Visual Studio, no HIP SDK) in a few seconds and cached (see
+[Configuration](#configuration)). Without hipRTC it falls back to the Triton kernel.
 
-**Kernel speed** (TFLOP/s = 4·B·H·N²·D / time, non-causal, bf16 in, HND; "full" includes quantization;
-best of 3 × N runs; the MI300X is a shared VM, numbers ±10%):
+### Check the install
 
-MI300X (gfx942, ROCm 7.2, torch 2.10, Triton 3.6; aiter 0.1.7 `flash_attn_func` = CK/asm FlashAttention v3):
+```bash
+python -c "import torch; from sageattention import sageattn; q = torch.randn(1, 24, 4608, 128, device='cuda', dtype=torch.float16); o = sageattn(q, q, q); r = torch.nn.functional.scaled_dot_product_attention(q, q, q); print('cos', torch.nn.functional.cosine_similarity(o.flatten().float(), r.flatten().float(), dim=0).item())"
+```
 
-| shape (B, H, N, D) | sage FP16 P·V | sage FP8 P·V | aiter bf16 | aiter FP8 (per-tensor) | Triton FA fp16 (nunchaku) | torch SDPA |
+prints a cosine close to 1 (the first call on RDNA3 includes the native kernel's one-time compile). For the
+full test suite and benchmarks see [Validation and benchmark scripts](#validation-and-benchmark-scripts).
+
+## ComfyUI
+
+ComfyUI already supports SageAttention through `sageattention.sageattn`; this port just has to be importable
+from ComfyUI's Python.
+
+1. Install it into ComfyUI's Python environment as above (portable: `python_embeded\python.exe -m pip ...`;
+   a venv / conda install: that environment's `pip`). If you set up ComfyUI yourself, install ComfyUI's own
+   requirements without letting them replace ROCm PyTorch -- some of them (`torchsde`, `kornia`, `spandrel`)
+   depend on `torch` and pip may otherwise pull a CUDA build:
+
+   ```bash
+   python -c "import torch, torchvision; print(f'torch=={torch.__version__}\ntorchvision=={torchvision.__version__}')" > constraints.txt
+   pip install -r ComfyUI/requirements.txt -c constraints.txt
+   ```
+
+2. Launch ComfyUI with the flag:
+
+   ```bash
+   python main.py --use-sage-attention
+   # Windows portable: add --use-sage-attention to the python_embeded\python.exe ... ComfyUI\main.py line
+   # of the .bat launcher you use
+   ```
+
+3. Confirm it is active. The startup log must say
+
+   ```
+   Using sage attention
+   ```
+
+   (instead of `Using pytorch attention`). If `sageattention` cannot be imported, ComfyUI logs
+   `To use the --use-sage-attention feature, the sageattention package must be installed first.` and keeps
+   PyTorch attention. If a call into SageAttention fails at runtime, ComfyUI logs
+   `Error running sage attention: ..., using pytorch attention instead.` -- so check the log after the first
+   generation too. `example/rocm/comfyui_check.py` checks the patched function directly: it imports ComfyUI
+   with the flag, asserts that `optimized_attention` is `attention_sage`, and compares it with
+   `attention_pytorch` on FLUX / Wan shapes:
+
+   ```bash
+   python example/rocm/comfyui_check.py --comfy /path/to/ComfyUI
+   # sage enabled: True available: True supports mask: False sage3 available: False
+   # optimized_attention -> attention_sage
+   #   B1 N4608 H24 D128 attention_sage  cos 0.999781 ...
+   ```
+
+There is nothing to change in workflows: every model that goes through ComfyUI's `optimized_attention`
+(Wan, HunyuanVideo, LTX-Video, FLUX, SD3, Qwen-Image, ...) uses SageAttention for its unmasked attention. Calls
+with an attention mask (mostly text encoders) stay on PyTorch attention, as with upstream SageAttention on
+NVIDIA. ComfyUI passes `smooth_k=False`, so its accuracy is slightly below calling `sageattn()` directly
+(cos 0.9998 instead of 0.9999 in the check above); images are not visibly affected.
+
+**Example workflow.** [`example/rocm/comfyui/wan2.1_t2v_1.3B.json`](example/rocm/comfyui/wan2.1_t2v_1.3B.json)
+(API format: load it in the ComfyUI web UI or POST it to `/prompt`) is the stock Wan2.1 text-to-video graph
+with ComfyUI's repackaged files from
+[Comfy-Org/Wan_2.1_ComfyUI_repackaged](https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged):
+`split_files/diffusion_models/wan2.1_t2v_1.3B_fp16.safetensors` -> `models/diffusion_models/`,
+`split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors` -> `models/text_encoders/`,
+`split_files/vae/wan_2.1_vae.safetensors` -> `models/vae/`.
+
+**Measured** with [`example/rocm/comfyui_ab.py`](example/rocm/comfyui_ab.py), which starts ComfyUI once per
+attention mode, runs the workflow three times with the same seeds in every mode and compares the frames:
+
+```bash
+python example/rocm/comfyui_ab.py --comfy /path/to/ComfyUI --workflow example/rocm/comfyui/wan2.1_t2v_1.3B.json \
+    --modes default,sage,kitchen --runs 3 --out runs/comfy_ab
+```
+
+| GPU (OS) | attention | sampler s/step | speedup | time per video (incl. VAE decode) | peak VRAM | PSNR vs default, runs 1-3 |
 | --- | --- | --- | --- | --- | --- | --- |
-| FLUX 1024² (1, 24, 4608, 128) | 0.57 ms (459) | 0.51 ms (516) | 0.58 ms (451) | 0.42 ms (621) | 0.84 ms (311) | 0.85 ms (307) |
-| SD3-like (2, 24, 4096, 64) | 0.57 ms (361) | 0.55 ms (375) | 0.66 ms (313) | -- | 0.76 ms (271) | 0.72 ms (288) |
-| FLUX 2048² (1, 24, 16896, 128) | 6.67 ms (526) | 5.36 ms (654) | 7.30 ms (481) | 5.34 ms (658) | 10.85 ms (323) | 11.38 ms (308) |
-| Wan 1.3B 480p (1, 12, 32760, 128) | 12.6 ms (524) | 10.4 ms (636) | 14.2 ms (465) | 10.7 ms (615) | 19.3 ms (342) | 22.3 ms (296) |
-| Wan 14B 480p (1, 40, 32760, 128) | 38.7 ms (569) | 31.4 ms (700) | 40.7 ms (540) | 34.3 ms (640) | 58.2 ms (377) | 68.5 ms (321) |
-| HunyuanVideo-like (1, 24, 45000, 128) | 43.7 ms (569) | 35.8 ms (694) | 45.8 ms (544) | 37.2 ms (668) | 65.6 ms (379) | 77.6 ms (321) |
-| Wan 14B 720p (1, 40, 75600, 128) | 196 ms (598) | 161 ms (729) | 215 ms (545) | 179 ms (653) | 302 ms (388) | 349 ms (335) |
+| RX 7800 XT (Windows 11) | default (`Using pytorch attention`) | 7.33 | 1.00x | 195.6 s | 13.1 GiB | reference |
+| RX 7800 XT (Windows 11) | default + `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` | 7.42 | 0.99x | 208.7 s | 13.1 GiB | same frames as default |
+| RX 7800 XT (Windows 11) | **`--use-sage-attention`** | **3.40** | **2.15x** | **122.5 s** | 13.1 GiB | 29.3 / 28.8 / 26.9 dB |
+| RX 7800 XT (Windows 11) | ComfyUI's INT8 "comfy kitchen attention" (Model Attention Backend node) | 3.55 | 2.06x | 123.9 s | 13.1 GiB | 23.9 / 23.5 / 20.8 dB |
+| W7900 (Ubuntu 24.04) | default (`Using pytorch attention`) | 5.16 | 1.00x | 105.2 s | 16.3 GiB | reference |
+| W7900 (Ubuntu 24.04) | **`--use-sage-attention`** | **2.65** | **1.95x** | **57.6 s** | 16.3 GiB | 26.4 / 31.5 / 25.7 dB |
+| W7900 (Ubuntu 24.04) | ComfyUI's INT8 "comfy kitchen attention" | 2.75 | 1.88x | 59.4 s | 16.2 GiB | 23.7 / 22.5 / 20.8 dB |
 
-(TFLOP/s in parentheses. "aiter FP8" is a speed reference only: per-tensor FP8 Q/K/V cast outside the timed
-region, no scaling. NHD inputs run at the same speed.) Upstream's own Triton SageAttention, where it compiles
-(D=64): 0.71 ms (289) on the SD3-like shape.
+ComfyUI @ b1a247c, Wan2.1 T2V 1.3B fp16, 832x480, 33 frames, 20 steps, uni_pc, CFG 6, seeds 42-44; s/step is
+the median over runs 2-3 (run 1 includes loading and kernel compilation); "time per video" is ComfyUI's
+"Prompt executed in" (prompt encoding is cached after run 1, the VAE decode -- about 50 s on the 7800 XT --
+is included); peak VRAM is device memory in use, polled. RX 7800 XT: torch 2.9.1 + ROCm 7.2.1 wheels,
+triton-windows 3.6.0.post26; W7900: torch 2.10.0+rocm7.0, Triton 3.6. Same seeds give the same scene,
+composition and motion in all modes; SageAttention's 26-31 dB to the default output is in the same
+range as the spread between *exact* attention implementations in the diffusers comparison below
+(27.6-32.6 dB), while ComfyUI's own INT8 attention, about as fast here, lands 4-6 dB further away. The
+default is PyTorch SDPA through ComfyUI's backend priority list (flash first); enabling PyTorch's experimental
+AOTriton kernels on top changes nothing in ComfyUI (row 2, separate session). Against a well-tuned FP16 flash
+attention (nunchaku-rocm's Triton kernel) the gain is smaller: 1.2-1.25x end to end (diffusers results below).
+A repeat session on the 7800 XT gave 3.49 and 3.76 s/step for SageAttention, plus one run at 11.3 s/step that
+was disturbed by other activity on the machine (not included above). On MI300X (Linux, torch 2.10.0+rocm7.0) the
+same workflow runs at 0.519 -> 0.391 s/step (1.33x; 12.9 -> 10.6 s per video), PSNR vs default
+28.2 / 31.3 / 26.5 dB; ComfyUI's INT8 attention is not available there (the node falls back to
+PyTorch).
+
+**With nunchaku-rocm's nodes.** [nunchaku-rocm](https://github.com/TwelveNights/nunchaku-rocm)'s
+*Nunchaku DiT Loader (ROCm)* models (4-bit FLUX.1 / FLUX.2 [klein]) compute attention with nunchaku's own
+fused Triton kernels, not through ComfyUI's `optimized_attention`, so `--use-sage-attention` does not change
+them; it is safe to use the flag in the same ComfyUI (it then applies to every other model in your
+workflows, e.g. a Wan video model next to a Nunchaku image model).
+
+**SageAttention3** (`--use-sage-attention3`) needs NVIDIA Blackwell FP4 hardware. Do not install
+`sageattention3_blackwell` on AMD: it would only fall back to this INT8 kernel.
+
+## Python and diffusers
+
+```python
+from sageattention import sageattn
+
+# q, k, v: (batch, heads, seq, head_dim) fp16/bf16 on the AMD GPU ("HND"), or tensor_layout="NHD"
+out = sageattn(q, k, v, tensor_layout="HND", is_causal=False)
+```
+
+All of upstream's entry points keep their signatures and dispatch to the AMD backend on a ROCm PyTorch:
+`sageattn`, `sageattn_qk_int8_pv_fp16_triton` (also takes `attn_mask`), `sageattn_qk_int8_pv_fp16_cuda`,
+`sageattn_qk_int8_pv_fp8_cuda`, `sageattn_qk_int8_pv_fp8_cuda_sm90`, `sageattn_varlen`. The `*_cuda` names are
+historical; on AMD they select Q-scale granularity (`per_warp` = 32 rows, `per_thread` = 16) and FP16 vs FP8
+P·V. Supported: NHD/HND with arbitrary strides, fp16/bf16, head dims up to 256 (33-128 on the native gfx11
+kernel), causal, GQA/MQA, masks (Triton kernel), `return_lse`, varlen, `qo_len != kv_len`, `torch.compile`
+(the Triton path is traced; the native kernel is a graph break). See [ROCM_NOTES.md](ROCM_NOTES.md) for
+the kernel-level API and design notes.
+
+**diffusers** (recent versions; checked with 0.40 and 0.41) has a SageAttention backend that calls `sageattention.sageattn`:
+
+```python
+pipe = WanPipeline.from_pretrained("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", torch_dtype=torch.bfloat16).to("cuda")
+pipe.transformer.set_attention_backend("sage")
+```
+
+(or `with attention_backend("sage"):` from `diffusers.models.attention_dispatch` for a block of code).
+Checked on the W7900 and RX 7800 XT: the backend reaches `sageattention.rocm`, and the output matches the
+default backend (cos 0.9999). `example/rocm/wan_e2e.py` runs Wan2.1 end to end with each attention
+implementation (`--attn sage-diffusers` uses this backend) and compares the videos.
+
+## Results
+
+All numbers below are reproducible with the scripts in this repository (commands in each section).
+
+### Kernel speed
+
+TFLOP/s = 4·B·H·N²·D / time (non-causal), bf16 inputs, HND, "sage" includes quantization; best of 3
+(`bench/rocm/bench_attn.py`). Baselines: the FP16 Triton flash attention from nunchaku-rocm (`bench/rocm/nunchaku_triton_attn.py`, vendored for
+benchmarking), aiter's CK/assembly FlashAttention on MI300X, and PyTorch SDPA.
 
 RX 7800 XT (gfx1101, Windows 11, ROCm 7.2.1, torch 2.9.1, triton-windows 3.6; "native" = the hipRTC kernel,
 which `sageattn()` uses on gfx11):
@@ -180,18 +269,72 @@ which `sageattn()` uses on gfx11):
 | causal (1, 24, 4608, 128) | 2.76 ms (47) | 3.29 ms (40) | | |
 | causal (1, 12, 16380, 128) | 16.3 ms (50) | 18.7 ms (44) | | |
 
-Radeon PRO W7900 (gfx1100, Linux, ROCm 7.2.2 driver / torch 2.10 ROCm 7.0): native 66-87 TFLOP/s, Triton
-sage 59-70, Triton FA 53-64, torch SDPA 22-23 on the same shapes (e.g. Wan 1.3B 81f: 84-90 ms native,
-98-107 ms Triton sage, 114-123 ms Triton FA, 292 ms SDPA; two sessions).
+(TFLOP/s in parentheses.) The SDPA column is PyTorch's default on this setup; with
+`TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` (enables its AOTriton flash kernels, marked experimental on RDNA3
+in this PyTorch build) SDPA takes 17.0 ms (15 TFLOP/s) at FLUX 1024² instead of 55-59 ms. On the W7900 (Linux,
+torch 2.10) the variable makes no difference. RDNA3's WMMA runs INT8 at the *same* rate as FP16 and has no FP8, so INT8 Q·K^T
+buys no matrix throughput there; the speedup comes from the hand-written kernel, which reaches ~75% of the
+7800 XT's 74.6 TFLOP/s FP16 peak (boost clock) at video shapes and ~71% at FLUX 1024².
 
-RDNA3's WMMA runs INT8 at the *same* rate as FP16 (no FP8 at all), so INT8 Q·K^T buys no matrix throughput
-there; the gfx11 speedup comes from the hand-written kernel (~75% of the 7800 XT's 74.6 TFLOP/s FP16 boost-clock peak
-at large video shapes, 56 TFLOP/s; ~71% at FLUX 1024²).
+Radeon PRO W7900 (gfx1100, Linux, ROCm 7.2.2 driver, torch 2.10 ROCm 7.0): native 66-87 TFLOP/s, Triton sage
+59-70, Triton FA 53-64, torch SDPA 22-23 on the same shapes (e.g. Wan 1.3B 81f: 84-90 ms native, 98-107 ms
+Triton sage, 114-123 ms Triton FA, 292 ms SDPA; two sessions).
 
-**End to end** (Wan2.1-T2V-1.3B, diffusers, 480×832, 33 frames, 20 steps, CFG 5, same seed):
+MI300X (gfx942, ROCm 7.2, torch 2.10, Triton 3.6; aiter 0.1.7 `flash_attn_func`; shared VM, ±10%):
 
-Prompts encoded once with UMT5-XXL; initial noise from a CPU generator, so runs on different GPUs start from
-identical latents. "PSNR vs reference" compares the decoded 33-frame video with the MI300X bf16-SDPA run.
+| shape (B, H, N, D) | sage FP16 P·V | sage FP8 P·V | aiter bf16 | aiter FP8 (per-tensor) | Triton FA fp16 (nunchaku) | torch SDPA |
+| --- | --- | --- | --- | --- | --- | --- |
+| FLUX 1024² (1, 24, 4608, 128) | 0.57 ms (459) | 0.51 ms (516) | 0.58 ms (451) | 0.42 ms (621) | 0.84 ms (311) | 0.85 ms (307) |
+| SD3-like (2, 24, 4096, 64) | 0.57 ms (361) | 0.55 ms (375) | 0.66 ms (313) | -- | 0.76 ms (271) | 0.72 ms (288) |
+| FLUX 2048² (1, 24, 16896, 128) | 6.67 ms (526) | 5.36 ms (654) | 7.30 ms (481) | 5.34 ms (658) | 10.85 ms (323) | 11.38 ms (308) |
+| Wan 1.3B 480p (1, 12, 32760, 128) | 12.6 ms (524) | 10.4 ms (636) | 14.2 ms (465) | 10.7 ms (615) | 19.3 ms (342) | 22.3 ms (296) |
+| Wan 14B 480p (1, 40, 32760, 128) | 38.7 ms (569) | 31.4 ms (700) | 40.7 ms (540) | 34.3 ms (640) | 58.2 ms (377) | 68.5 ms (321) |
+| HunyuanVideo-like (1, 24, 45000, 128) | 43.7 ms (569) | 35.8 ms (694) | 45.8 ms (544) | 37.2 ms (668) | 65.6 ms (379) | 77.6 ms (321) |
+| Wan 14B 720p (1, 40, 75600, 128) | 196 ms (598) | 161 ms (729) | 215 ms (545) | 179 ms (653) | 302 ms (388) | 349 ms (335) |
+
+"aiter FP8" is a speed reference only (per-tensor FP8 Q/K/V cast outside the timed region, no scaling).
+Upstream's own Triton SageAttention, where it compiles on ROCm Triton 3.6 (head dim 64 only): 0.71 ms (289)
+on the SD3-like shape. Summary: the fastest of everything measured against the Triton FA and SDPA on all
+three GPUs; on MI300X the default FP16 P·V path is on par with aiter bf16 at FLUX 1024² and ~10% ahead at
+long video shapes, but slower than aiter's per-tensor FP8 kernel; sage FP8 P·V beats aiter FP8 only at
+>= ~32K tokens.
+
+### Accuracy
+
+`bench/rocm/accuracy.py`: output vs FP32 attention, cosine similarity and relative L1 as in the SageAttention
+papers. Synthetic inputs have a large per-channel K bias and a few 6x outlier Q/K channels, like real DiT
+activations (B2 H8 N4096, bf16):
+
+| head dim, mask | method | MI300X cos sim | MI300X rel-L1 | RX 7800 XT cos sim | RX 7800 XT rel-L1 |
+| --- | --- | --- | --- | --- | --- |
+| 64, full | sage, FP16 P·V | 0.999913 | 0.0097 | 0.999920 | 0.0095 |
+| 64, full | sage, FP8 P·V (gfx942) | 0.999691 | 0.0215 | -- | -- |
+| 64, full | upstream's own Triton SageAttention, run unmodified | 0.999899 | 0.0104 | 0.999899 | 0.0106 |
+| 64, full | SDPA in bf16 (for scale) | 0.999999 | 0.0014 | 0.999999 | 0.0014 |
+| 128, full | sage, FP16 P·V | 0.999898 | 0.0107 | 0.999901 | 0.0106 |
+| 128, full | sage, FP8 P·V | 0.999652 | 0.0232 | -- | -- |
+| 128, causal | sage, FP16 P·V | 0.999902 | 0.0103 | 0.999905 | 0.0101 |
+| 128, causal | sage, FP8 P·V | 0.999643 | 0.0235 | -- | -- |
+
+On the 7800 XT the native and Triton kernels give the same metrics to 6 digits (same quantization). The
+default `sageattn()` granularity is `per_warp` (32-row Q scales), slightly finer than upstream's per-block
+Triton path. Real activations -- self-attention Q/K/V captured from Wan2.1-T2V-1.3B (14040 tokens, 12 heads,
+d=128) at 5 (step, block) points of a 20-step run (`wan_e2e.py --dump-qkv`, `accuracy.py --qkv`), MI300X:
+
+| method | cos sim (min..max) | rel-L1 (min..max) |
+| --- | --- | --- |
+| sage, FP16 P·V | 0.99993 .. 0.99998 | 0.0037 .. 0.0100 |
+| sage, FP8 P·V | 0.99974 .. 0.99998 | 0.0062 .. 0.0201 |
+| SDPA in bf16 | 0.999998 .. 0.999999 | 0.0011 .. 0.0017 |
+
+FP8 P·V keeps P in e4m3 (3 mantissa bits), as upstream's FP8 kernels do; it has ~2x the FP16 path's error, so
+`sageattn()` uses FP16 P·V by default on gfx942 and FP8 is opt-in.
+
+### End to end, diffusers (Wan2.1-T2V-1.3B)
+
+`example/rocm/wan_e2e.py`: 480x832, 33 frames, 20 steps, CFG 5, same seed; prompts encoded once with UMT5-XXL;
+initial noise from a CPU generator so runs on different GPUs start from identical latents. "PSNR vs
+reference" compares the decoded 33-frame video with the MI300X bf16-SDPA run.
 
 | GPU | attention | denoise (20 steps) | per step | speedup | PSNR vs reference | latent cos |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -207,178 +350,64 @@ identical latents. "PSNR vs reference" compares the decoded 33-frame video with 
 | MI300X | SageAttention, FP8 P·V | 9.7 s | 0.48 s | 1.26x | 25.94 dB | 0.9925 |
 
 Diffusion sampling amplifies any rounding difference, so the useful yardstick is the spread between *exact*
-attention implementations: they land 27.6-32.6 dB from the reference (SDPA itself on the W7900: 28.9 dB), and
-SageAttention lands at 26.8-29.8 dB (the same kernel on two RDNA3 boards differs by 27.3 dB from itself); the
-frames show the same scene, composition and motion (`frame016.png` of each run). At 81 frames (32760 tokens, 10 steps) the 7800 XT goes from 154.4 s to 123.7 s (1.25x). Peak VRAM while
-denoising is unchanged (3.9 GiB at 33 frames, 4.8 GiB at 81). MI300X timings are on a shared VM (±10%).
+attention implementations: they land 27.6-32.6 dB from the reference (SDPA itself on the W7900: 28.9 dB);
+SageAttention lands at 26.8-29.8 dB, and the frames show the same scene, composition and motion. At 81 frames
+(32760 tokens, 10 steps) the 7800 XT goes from 154.4 s to 123.7 s (1.25x). Peak VRAM while denoising is
+unchanged (3.9 GiB at 33 frames, 4.8 GiB at 81). The ComfyUI results are in the [ComfyUI](#comfyui) section.
 
-ComfyUI: `example/rocm/comfyui_check.py` imports ComfyUI with `--use-sage-attention` and checks that
-`optimized_attention` resolves to `attention_sage` and runs this package unchanged (MI300X: 0.65 vs 0.98 ms
-FLUX 1024², 2.4 vs 4.7 ms Wan 480p 33f against `attention_pytorch`; note ComfyUI calls `sageattn` with
-`smooth_k=False`).
+## Validation and benchmark scripts
 
-**Summary.** Fastest of everything measured vs nunchaku's Triton FA and torch SDPA on all three GPUs; on MI300X
-the default (FP16 P·V) path is competitive with aiter bf16 (within noise at FLUX 1024², ~10% ahead at long video
-shapes) but slower than aiter's per-tensor FP8 kernel, and sage FP8 P·V beats aiter FP8 only at >= ~32K tokens.
+| script | what it does |
+| --- | --- |
+| `scripts/rocm/validate.py [--bench]` | test suite + accuracy table (+ the kernel benchmarks above) on the local GPU; Linux and Windows |
+| `tests/rocm/` (`pytest tests/rocm`) | 116 tests: NHD/HND, fp16/bf16, head dims 32-256, causal, GQA, masks, LSE, varlen, ragged lengths, native vs Triton, `torch.compile` (skipped on Windows, which has no host compiler for Inductor). 115 pass + 1 skip on the RX 7800 XT, 116 on the W7900; on MI300X the 70 gfx11-only tests skip |
+| `bench/rocm/accuracy.py [--qkv file]` | accuracy table (synthetic or captured Q/K/V) |
+| `bench/rocm/bench_attn.py --preset image\|video\|video_small` | kernel speed vs baselines (`--methods`, `--shape B,H,N,D`, `--causal`, `--layout NHD`) |
+| `example/rocm/wan_e2e.py` | diffusers Wan2.1 end to end with each attention implementation, video comparison |
+| `example/rocm/comfyui_check.py --comfy DIR` | ComfyUI's `--use-sage-attention` path at function level |
+| `example/rocm/comfyui_ab.py --comfy DIR --workflow WF` | ComfyUI workflow A/B: default, default + `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`, `--use-sage-attention`, ComfyUI's INT8 "comfy kitchen" attention; timings, VRAM, PSNR |
 
-**Limitations / not done.** Causal attention at short lengths is slower than aiter on MI300X (B4 H32 N4096:
-1.67 ms vs 1.27 ms for aiter bf16; at H32 N16384 4.86 vs 4.69 ms), since only the non-causal path was tuned for DiTs.
-On RDNA3, INT4 Q·K^T (SageAttention2's 4-bit variant, `v_wmma_i32_16x16x16_iu4` at 2x the INT8 rate) could
-shorten the Q·K^T half further but costs accuracy and is not in upstream's current API, so it is not
-implemented. FP8 P·V is opt-in (see accuracy). SageAttention3 is not portable (above).
+Timings are only meaningful on an idle GPU; run `validate.py` once before `validate.py --bench-only` so the
+Triton and hipRTC compile caches are warm.
 
-See [`ROCM_NOTES.md`](./ROCM_NOTES.md) for kernel entry points and design notes, `bench/rocm/` and
-`example/rocm/wan_e2e.py` to reproduce.
+## Limitations
 
-## Installation
-### Base environment
-+ `python>=3.9`   , `torch>=2.3.0`  , `triton>=3.0.0` 
-- `CUDA`:
-  + `>=12.8` for Blackwell or SageAttention2++
-  + `>=12.4` for fp8 support on Ada
-  + `>=12.3` for fp8 support on Hopper
-  + `>=12.0` for Ampere
-+ `flash-attn` for benchmarking
+- SageAttention3 (FP4 microscaling, `sageattention3_blackwell/`) needs NVIDIA Blackwell FP4 tensor cores and
+  is not ported; on ROCm `sageattn3_blackwell()` falls back to `sageattn` with a warning.
+- INT4 Q·K^T (SageAttention2's 4-bit variant; RDNA3 has 2x-rate INT4 WMMA) is not implemented: it costs
+  accuracy and is not in upstream's current API.
+- Causal attention at short lengths is not tuned on MI300X (B4 H32 N4096: 1.67 ms vs 1.27 ms for aiter bf16);
+  only the non-causal path was tuned for DiTs. FP8 P·V (MI300X) is opt-in because of its accuracy.
+- Masked attention runs on the Triton kernel (not the native gfx11 one); ComfyUI does not send masks to
+  SageAttention at all (see [ComfyUI](#comfyui)).
+- Tested on gfx942, gfx1100 and gfx1101 only. RDNA4 (gfx12), RDNA2, gfx90a and gfx950 run the generic Triton
+  path, untested. Windows support depends on `triton-windows` and AMD's ROCm wheels for Windows.
+- The first call per shape class compiles Triton kernels (and, on RDNA3, the native kernel once per GPU
+  arch); later runs load them from the caches.
 
-### Install Package
+## Configuration
 
-For SageAttention V1 in Triton (slower than SageAttention V2/V2++/V3), refer to [SageAttention-1](https://github.com/thu-ml/SageAttention/tree/sageattention-1) branch and install using pip: `pip install sageattention==1.0.6`
+| variable | effect |
+| --- | --- |
+| `SAGEATTN_NATIVE=0` / `1` | RDNA3: disable the native hipRTC kernel (Triton only) / require it (raise instead of falling back) |
+| `SAGEATTN_CACHE_DIR` | where compiled native kernels are cached (default `~/.cache/sageattention`, `%LOCALAPPDATA%\sageattention\cache` on Windows) |
+| `SAGEATTN_ROCM_PV=fp8` | MI300X: FP8 P·V in `sageattn()` (default FP16) |
+| `SAGEATTN_ROCM=1` | install time: force the pure-Python ROCm install |
+| `AMD_COMGR_CACHE_DIR` | ROCm's own hipRTC compiler cache (ROCm default: a per-user directory) |
+| `TRITON_CACHE_DIR` | Triton's kernel cache |
 
-To use SageAttention 2.2.0 (containing SageAttention2++), you can install using pip:
-```
-pip install sageattention==2.2.0 --no-build-isolation
-```
+## Credits and license
 
-**Or** you can compile from source:
-```
-git clone https://github.com/thu-ml/SageAttention.git
-cd SageAttention 
-export EXT_PARALLEL=4 NVCC_APPEND_FLAGS="--threads 8" MAX_JOBS=32 # Optional
-python setup.py install
-```
-
-To benchmark the speed against FlashAttention3, please compile FlashAttention3 from source:
-```
-git clone https://github.com/Dao-AILab/flash-attention.git --recursive
-git checkout b7d29fb3b79f0b78b1c369a52aaa6628dabfb0d7 # 2.7.2 release
-cd hopper
-python setup.py install
-```
-
-## How to Use
-```python
-from sageattention import sageattn
-attn_output = sageattn(q, k, v, tensor_layout="HND", is_causal=False)
-```
-+ `q, k, v` are **FP16/BF16** dtype with the shape `(batch_size, head_num, seq_len, head_dim)` using default `tensor_layout="HND"`. For shape `(batch_size, seq_len, head_num, head_dim)`, set `tensor_layout="NHD"`. 
-+ `is_causal` determines the use of a causal mask.
-
-### Available APIs:
-+ `sageattn`: Automatically selects the optimal kernel based on the GPU to achieve a good performance-accuracy trade-off.
-+ `sageattn_qk_int8_pv_fp16_triton`: INT8 quantization for $QK^\top$ and FP16 for $PV$ using Triton backend.
-+ `sageattn_qk_int8_pv_fp16_cuda`: INT8 quantization for $QK^\top$ and FP16 for $PV$ using CUDA backend.
-+ `sageattn_qk_int8_pv_fp8_cuda`: INT8 quantization for $QK^\top$ and FP8 for $PV$ using CUDA backend. (Note that setting `pv_accum_dtype=fp32+fp16` corresponds to SageAttention2++.)
-+ `sageattn_qk_int8_pv_fp8_cuda_sm90`: INT8 quantization for $QK^\top$ and FP8 for $PV$ using CUDA backend, specifically optimized for Hopper GPUs.
-+ `sageattn_varlen`: INT8 quantization for $QK^\top$ and FP16 for $PV$ using Triton backend. Support for varying sequence lengths within the same batch.
-
-For optimal speed and accuracy performance on custom devices and models, we strongly recommend referring to the [this file](./sageattention/core.py) for detailed guidance.
-
-> **Note:**
-Support for different sequence lengths between `q` and `k,v` and `group-query attention` is available.
-
-
-### Plug-and-play Example
-
-We can replace `scaled_dot_product_attention` easily. 
-We will take [CogvideoX](https://huggingface.co/zai-org/CogVideoX-2b) as an example:
-
-Add the following codes and run
-```diff
-import torch.nn.functional as F
-
-+ from sageattention import sageattn
-+ F.scaled_dot_product_attention = sageattn
-
-```
-
-Specifically,
-
-```bash
-cd example
-python cogvideox_infer.py --model cogvideox-2b --compile --attention_type sage
-```
-
-**You can get a lossless video in** `./example/videos/<model>/<attention_type>/` **faster than by using** `--attention_type sdpa`. More examples and guidance can be found under the `example/` directory.
-
-> **Note:** Not all models works with `F.scaled_dot_product_attention = sageattn`. Technically, you should replace the original Attention by modifying the `Attention Class` of the target model. For image and video models, we suggest only replacing the attention in DiT (see `example/modify_mochi.py` for detail).
-
-### Kernel Benchmarking
-We provide a benchmarking script to compare the speed of different kernels including SageAttention, FlashAttention2 and FlashAttention3. Please refer to the `benchmark/` directory for more details.
- 
-## Performance
-### Speed of Kernels
-
-`8+8` means the kernel with INT8 quantization for $QK^\top$ and FP8 quantization for $PV$. `8+16` uses FP16 with FP16 accumulator for $PV$.
-
-![Local Image](./assets/5090_sageattn2++.png)
-
-![Local Image](./assets/4090_sageattn2++.png)
-
-![Local Image](./assets/4090_hd128.png)
-
-![Local Image](./assets/L20_hd128.png)
-
-![Local Image](./assets/H100_hd128.png)
-
-![Local Image](./assets/H20_hd128.png)
-
-![Local Image](./assets/A100_hd128.png)
-
-![Local Image](./assets/3090_hd128.png)
-
-> **Note:** The TOPS results refer only to the Attention Kernel, excluding the quantization and smoothing.
-
-### End-to-end Performance
-#### **End-to-End Accuracy:**
-
-![Local Image](./assets/22.png)
-
-![Local Image](./assets/23.png)
-
-![Local Image](./assets/24.png)
-
-![Local Image](./assets/25.png)
-
-#### **End-to-End Speedup:**
-
-![Local Image](./assets/26.png)
-*Note: SageAttention2++ achieves higher speed.*
-
-## Citation
-**If you use this code or find our work valuable, please cite:**
-```
-@inproceedings{zhang2025sageattention,
-  title={SageAttention: Accurate 8-Bit Attention for Plug-and-play Inference Acceleration}, 
-  author={Zhang, Jintao and Wei, Jia and Zhang, Pengle and Zhu, Jun and Chen, Jianfei},
-  booktitle={International Conference on Learning Representations (ICLR)},
-  year={2025}
-}
-@inproceedings{zhang2024sageattention2,
-  title={Sageattention2: Efficient attention with thorough outlier smoothing and per-thread int4 quantization},
-  author={Zhang, Jintao and Huang, Haofeng and Zhang, Pengle and Wei, Jia and Zhu, Jun and Chen, Jianfei},
-  booktitle={International Conference on Machine Learning (ICML)},
-  year={2025}
-}
-@article{zhang2025sageattention2++,
-  title={Sageattention2++: A more efficient implementation of sageattention2},
-  author={Zhang, Jintao and Xu, Xiaoming and Wei, Jia and Huang, Haofeng and Zhang, Pengle and Xiang, Chendong and Zhu, Jun and Chen, Jianfei},
-  journal={arXiv preprint arXiv:2505.21136},
-  year={2025}
-}
-@article{zhang2025sageattention3,
-  title={SageAttention3: Microscaling FP4 Attention for Inference and An Exploration of 8-Bit Training},
-  author={Zhang, Jintao and Wei, Jia and Zhang, Pengle and Xu, Xiaoming and Huang, Haofeng and Wang, Haoxu and Jiang, Kai and Zhu, Jun and Chen, Jianfei},
-  journal={arXiv preprint arXiv:2505.11594},
-  year={2025}
-}
-```
+- SageAttention, SageAttention2/2++ and SageAttention3 are by Jintao Zhang, Jia Wei, Haofeng Huang, Pengle
+  Zhang, Jun Zhu, Jianfei Chen and co-authors (Tsinghua University, thu-ml); please cite their papers (see
+  [README_upstream.md](README_upstream.md#citation)) if you use this work. This port re-implements their
+  quantization scheme and kernels for AMD GPUs; the algorithms are theirs.
+- The native-kernel infrastructure (`sageattention/rocm/native/hip.py`, `hiprtc.py`, `build.py`,
+  `hip_prelude.h`) is adapted from
+  [nunchaku-rocm](https://github.com/TwelveNights/nunchaku-rocm), and the benchmark baseline
+  `bench/rocm/nunchaku_triton_attn.py` is its Triton flash attention, vendored unchanged except for one
+  inlined helper (Apache-2.0).
+- License: Apache-2.0, same as upstream ([LICENSE](LICENSE)). The ROCm backend is new code under
+  `sageattention/rocm/`, `bench/rocm/`, `example/rocm/`, `tests/rocm/` and `scripts/rocm/`, plus small
+  dispatch changes in `sageattention/core.py`, `setup.py` and `sageattention3_blackwell/`.
+- Not affiliated with or endorsed by the SageAttention authors or AMD.
