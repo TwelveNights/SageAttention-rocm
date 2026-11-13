@@ -355,6 +355,21 @@ SageAttention lands at 26.8-29.8 dB, and the frames show the same scene, composi
 (32760 tokens, 10 steps) the 7800 XT goes from 154.4 s to 123.7 s (1.25x). Peak VRAM while denoising is
 unchanged (3.9 GiB at 33 frames, 4.8 GiB at 81). The ComfyUI results are in the [ComfyUI](#comfyui) section.
 
+### 3D generation (image to 3D model)
+
+Same settings with PyTorch attention vs SageAttention, warm runs; the outputs match (same mesh and texture, rendered
+side by side).
+
+| Model | GPU | PyTorch attention | SageAttention | speedup |
+| --- | --- | --- | --- | --- |
+| Pixal3D in ComfyUI (`--use-sage-attention`), full image -> textured GLB | RX 7800 XT, Windows | 387 s | 215 s | 1.8x |
+| Hunyuan3D-2.1 PBR texturing ([Hunyuan3D-2.1-rocm](https://github.com/TwelveNights/Hunyuan3D-2.1-rocm)) | W7900 | 64 s | 46 s | 1.4x |
+| Hunyuan3D-2.1 shape, FlashVDM decoder | W7900 | 54 s | 42 s | 1.3x |
+| TripoSG ([TripoSG-rocm](https://github.com/TwelveNights/TripoSG-rocm)), 50 steps | W7900 | 37 s | 30 s | 1.2x |
+
+In ComfyUI's TRELLIS.2 / Pixal3D the two high-resolution sampler stages (sparse attention over tens of thousands of
+tokens) go from 161 s to 68 s and from 88 s to 37 s.
+
 ## Validation and benchmark scripts
 
 | script | what it does |
