@@ -367,6 +367,8 @@ side by side).
 | Hunyuan3D-2.1 shape, FlashVDM decoder | W7900 | 54 s | 42 s | 1.3x |
 | TripoSG ([TripoSG-rocm](https://github.com/TwelveNights/TripoSG-rocm)), 50 steps | W7900 | 37 s | 30 s | 1.2x |
 
+TripoSG and the Hunyuan3D-2.1 painter in ComfyUI: [ComfyUI-3D-rocm](https://github.com/TwelveNights/ComfyUI-3D-rocm) (uses SageAttention when installed).
+
 In ComfyUI's TRELLIS.2 / Pixal3D the two high-resolution sampler stages (sparse attention over tens of thousands of
 tokens) go from 161 s to 68 s and from 88 s to 37 s.
 
