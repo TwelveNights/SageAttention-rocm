@@ -90,7 +90,16 @@ def default_pv_dtype(device_index: int = 0) -> str:
     return "fp16"
 
 
+def _windows_ready() -> None:
+    if os.name == "nt":
+        from . import windows
+
+        if windows.MISSING:
+            raise RuntimeError(windows.MISSING)
+
+
 def _check_inputs(q, k, v):
+    _windows_ready()
     dtype = q.dtype
     assert q.is_cuda, "Input tensors must be on a GPU (cuda/hip device)."
     assert dtype in [torch.float16, torch.bfloat16], "Input tensors must be in dtype of torch.float16 or torch.bfloat16"

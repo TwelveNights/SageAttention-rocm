@@ -59,6 +59,10 @@ from .rocm import arch as _rocm_arch
 _IS_ROCM = _rocm_arch.is_rocm()
 if _IS_ROCM:
     from .rocm import api as _rocm_api
+    import os as _os
+    if _os.name == "nt":
+        from .rocm import windows as _rocm_windows
+        _rocm_windows.prepare()
 
 from typing import Any, List, Literal, Optional, Tuple, Union
 import warnings

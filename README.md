@@ -41,66 +41,57 @@ Headline numbers (details and baselines in [Results](#results)):
 
 ## Contents
 
-- [Install](#install): [Linux](#linux) · [Windows](#windows) · [check the install](#check-the-install)
+- [Install](#install): [from source](#from-source) · [check the install](#check-the-install)
 - [ComfyUI](#comfyui)
 - [Python and diffusers](#python-and-diffusers)
 - [Results](#results)
 - [Validation and benchmark scripts](#validation-and-benchmark-scripts)
 - [Limitations](#limitations)
 - [Configuration](#configuration)
+- [Other SageAttention ports for AMD](#other-sageattention-ports-for-amd)
 - [Credits and license](#credits-and-license)
 
 ## Install
 
-Requirements: a ROCm build of PyTorch (>= 2.6; tested 2.9.1 and 2.10.0) and Triton (Linux: the `triton`
-that comes with ROCm PyTorch; Windows: `triton-windows`). Install SageAttention **into the same Python
-environment** that runs your model or ComfyUI, and never let pip replace your ROCm PyTorch -- install with
-`--no-deps` (SageAttention needs nothing beyond torch and triton).
-
-The package is the usual `sageattention` 2.2.0 (same name and API as upstream). `setup.py` detects the
-ROCm build of PyTorch and skips the CUDA extensions; set `SAGEATTN_ROCM=1` to force that if the detection
-cannot import torch (e.g. on a machine that also has an NVIDIA CUDA toolkit).
-
-### Linux
+From PyPI, into the Python environment that runs your model or ComfyUI (it must already have a ROCm build of
+PyTorch, >= 2.6; tested 2.9.1 and 2.10.0):
 
 ```bash
-# inside the venv / conda env that has ROCm PyTorch (e.g. from https://download.pytorch.org/whl/rocm7.0)
-python -c "import torch, triton; print(torch.__version__, torch.version.hip, triton.__version__)"
-
-git clone -b rocm https://github.com/TwelveNights/SageAttention-rocm.git
-pip install --no-deps --no-build-isolation ./SageAttention-rocm
-# with uv:  uv pip install --python /path/to/venv/bin/python --no-deps ./SageAttention-rocm
+pip install sageattention-rocm
+# ComfyUI Windows portable, from the folder that contains python_embeded:
+python_embeded\python.exe -m pip install sageattention-rocm
 ```
 
-### Windows
+The package installs as `sageattention` 2.2.0 (same module and API as upstream), so ComfyUI's
+`--use-sage-attention` and other callers find it as usual. It is pure Python: nothing is compiled at install time,
+and it declares no `torch` dependency, so pip never replaces your ROCm PyTorch. On Linux it uses the `triton` that
+comes with ROCm PyTorch; on Windows it pulls in [`triton-windows`](https://github.com/woct0rdho/triton-windows).
+Uninstall upstream's CUDA `sageattention` first if it is there: both provide the module `sageattention`.
 
-Native Windows works with AMD's ROCm PyTorch wheels (ROCm 7.x for Windows, RX 7000 / RX 9000 series)
-and [`triton-windows`](https://github.com/woct0rdho/triton-windows). Use 3.6 or newer (tested:
-3.6.0.post26).
-
-**ComfyUI Windows portable for AMD** (`ComfyUI_windows_portable_amd`, ships `python_embeded` with ROCm
-PyTorch), from the folder that contains `python_embeded`:
+**Windows, once:** Triton also needs the ROCm SDK devel package that matches your ROCm wheels (HIP headers). It
+comes from AMD's repo.radeon.com, so pip cannot install it as a dependency. When it is missing, the first
+SageAttention call fails with the exact command to run, e.g. for ComfyUI 0.45's portable (ROCm 7.2.1):
 
 ```bat
-python_embeded\python.exe -c "import torch; print(torch.__version__, torch.version.hip)"
-python_embeded\python.exe -m pip install "triton-windows>=3.6"
+python_embeded\python.exe -m pip install https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl
+```
+
+Python's `include` / `libs` folders, which the portable's embedded Python leaves out and Triton also needs, are
+added automatically on first import (a one-time download from the triton-windows project).
+
+### From source
+
+```bash
 git clone -b rocm https://github.com/TwelveNights/SageAttention-rocm.git
-python_embeded\python.exe -m pip install --no-deps --no-build-isolation .\SageAttention-rocm
+pip install --no-deps --no-build-isolation ./SageAttention-rocm
 ```
 
-If `--no-build-isolation` complains about a missing `setuptools`, drop the flag and run `set SAGEATTN_ROCM=1`
-first (the isolated build cannot import torch to detect ROCm).
+`setup.py` detects the ROCm build of PyTorch and skips the CUDA extensions; with `--no-build-isolation` missing
+`setuptools`, drop the flag and set `SAGEATTN_ROCM=1` (the isolated build cannot import torch to detect ROCm).
+`SAGEATTN_ROCM=1 python -m build --wheel` builds the PyPI wheel.
 
-**Your own venv** (what the RX 7800 XT numbers below were measured with), e.g. with AMD's wheels:
-
-```powershell
-# torch / torchvision / rocm_sdk from AMD's index for your GPU and ROCm version, then:
-pip install "triton-windows>=3.6"
-pip install --no-deps --no-build-isolation .\SageAttention-rocm
-```
-
-On RDNA3 the native kernel is compiled on first use with hipRTC (`hiprtc*.dll` from the ROCm runtime that
-PyTorch loaded -- no Visual Studio, no HIP SDK) in a few seconds and cached (see
+On RDNA3 the native kernel is compiled on first use with hipRTC (`hiprtc*.dll` / `libhiprtc.so` from the ROCm
+runtime that PyTorch loaded -- no Visual Studio, no HIP SDK) in a few seconds and cached (see
 [Configuration](#configuration)). Without hipRTC it falls back to the Triton kernel.
 
 ### Check the install
@@ -412,6 +403,22 @@ Triton and hipRTC compile caches are warm.
 | `SAGEATTN_ROCM=1` | install time: force the pure-Python ROCm install |
 | `AMD_COMGR_CACHE_DIR` | ROCm's own hipRTC compiler cache (ROCm default: a per-user directory) |
 | `TRITON_CACHE_DIR` | Triton's kernel cache |
+
+## Other SageAttention ports for AMD
+
+This is not the only one. Upstream has open pull requests for AMD (thu-ml/SageAttention
+[#332](https://github.com/thu-ml/SageAttention/pull/332) rocWMMA,
+[#368](https://github.com/thu-ml/SageAttention/pull/368) native gfx12 backend,
+[#381](https://github.com/thu-ml/SageAttention/pull/381) Triton path on ROCm), and upstream's SageAttention 1 on
+PyPI (`pip install sageattention`, 1.0.6) is Triton-only and reported to run on ROCm. On **RDNA4** (RX 9070, gfx1201)
+prefer the ports with hand-tuned gfx1201 kernels, e.g.
+[IxMxAMAR/SageAttention-RDNA4](https://github.com/IxMxAMAR/SageAttention-RDNA4) and the prebuilt Windows wheels
+built from #368; this package runs its generic Triton path there. Other RDNA3 ports:
+[LuXuxue/sageattention-rdna3](https://github.com/LuXuxue/sageattention-rdna3),
+[jnolck/SageAttention-rocm](https://github.com/jnolck/SageAttention-rocm); earlier:
+[EmbeddedLLM/SageAttention-rocm](https://github.com/EmbeddedLLM/SageAttention-rocm). What this one adds: one
+pure-Python package for RDNA3 and CDNA3 on Linux and Windows, a native RDNA3 kernel compiled at runtime (no
+compiler toolchain), and the full SageAttention 2 API.
 
 ## Credits and license
 

@@ -290,15 +290,49 @@ if not SKIP_CUDA_BUILD:
 
     cmdclass = {"build_ext": BuildExtensionSeparateDir} if ext_modules else {}
 
+if _is_rocm_build():
+    # Published on PyPI as `sageattention-rocm` (pure Python + Triton, one wheel for all AMD GPUs and both OSes).
+    # It still imports as `sageattention`. No torch requirement on purpose: pip must never replace a ROCm PyTorch.
+    import re
+
+    repo = 'https://github.com/TwelveNights/SageAttention-rocm'
+    readme = open('README.md', encoding='utf-8').read()
+    # PyPI renders the README without the repository around it: make relative links and images absolute
+    readme = re.sub(r'(!\[[^\]]*\]\()(?!https?://|#)', r'\1https://raw.githubusercontent.com/TwelveNights/SageAttention-rocm/rocm/', readme)
+    readme = re.sub(r'(?<!!)(\[[^\]]*\]\()(?!https?://|#)', rf'\1{repo}/blob/rocm/', readme)
+    metadata = dict(
+        name='sageattention-rocm',
+        version='2.2.0.post1',
+        author='SageAttention team; ROCm port by Eddie Zhou',
+        license='Apache-2.0',
+        description='SageAttention (8-bit attention, drop-in for SDPA) on AMD GPUs with ROCm, Linux and Windows: '
+                    'imports as `sageattention`, nothing to compile.',
+        long_description=readme,
+        url=repo,
+        project_urls={'Upstream': 'https://github.com/thu-ml/SageAttention'},
+        install_requires=['triton-windows>=3.6,<3.7; sys_platform == "win32"'],
+        classifiers=[
+            'License :: OSI Approved :: Apache Software License',
+            'Programming Language :: Python :: 3',
+            'Operating System :: POSIX :: Linux',
+            'Operating System :: Microsoft :: Windows',
+            'Topic :: Scientific/Engineering :: Artificial Intelligence',
+        ],
+    )
+else:
+    metadata = dict(
+        name='sageattention',
+        version='2.2.0',
+        author='SageAttention team',
+        license='Apache 2.0 License',
+        description='Accurate and efficient plug-and-play low-bit attention.',
+        long_description=open('README.md', encoding='utf-8').read(),
+        url='https://github.com/thu-ml/SageAttention',
+    )
+
 setup(
-    name='sageattention',
-    version='2.2.0',
-    author='SageAttention team',
-    license='Apache 2.0 License',
-    description='Accurate and efficient plug-and-play low-bit attention.',
-    long_description=open('README.md', encoding='utf-8').read(),
+    **metadata,
     long_description_content_type='text/markdown',
-    url='https://github.com/thu-ml/SageAttention',
     packages=find_packages(),
     # the ROCm backend's RDNA3 kernel source, compiled at runtime with hipRTC
     package_data={"sageattention.rocm.native": ["*.hip", "*.h"]},
