@@ -302,7 +302,7 @@ if _is_rocm_build():
     readme = re.sub(r'(?<!!)(\[[^\]]*\]\()(?!https?://|#)', rf'\1{repo}/blob/rocm/', readme)
     metadata = dict(
         name='sageattention-rocm',
-        version='2.2.0.post1',
+        version='2.2.0.post2',
         author='SageAttention team; ROCm port by Eddie Zhou',
         license='Apache-2.0',
         description='SageAttention (8-bit attention, drop-in for SDPA) on AMD GPUs with ROCm, Linux and Windows: '
@@ -310,7 +310,8 @@ if _is_rocm_build():
         long_description=readme,
         url=repo,
         project_urls={'Upstream': 'https://github.com/thu-ml/SageAttention'},
-        install_requires=['triton-windows>=3.6,<3.7; sys_platform == "win32"'],
+        # Windows: Triton comes from triton-windows in the series matching the installed PyTorch, which a dependency
+        # cannot express; sageattention/_triton_windows.py prints the exact command when it is missing.
         classifiers=[
             'License :: OSI Approved :: Apache Software License',
             'Programming Language :: Python :: 3',

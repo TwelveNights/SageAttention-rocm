@@ -65,14 +65,22 @@ python_embeded\python.exe -m pip install sageattention-rocm
 The package installs as `sageattention` 2.2.0 (same module and API as upstream), so ComfyUI's
 `--use-sage-attention` and other callers find it as usual. It is pure Python: nothing is compiled at install time,
 and it declares no `torch` dependency, so pip never replaces your ROCm PyTorch. On Linux it uses the `triton` that
-comes with ROCm PyTorch; on Windows it pulls in [`triton-windows`](https://github.com/woct0rdho/triton-windows).
-Uninstall upstream's CUDA `sageattention` first if it is there: both provide the module `sageattention`.
+comes with ROCm PyTorch. Uninstall upstream's CUDA `sageattention` first if it is there: both provide the module
+`sageattention`.
 
-**Windows, once:** Triton also needs the ROCm SDK devel package that matches your ROCm wheels (HIP headers). It
-comes from AMD's repo.radeon.com, so pip cannot install it as a dependency. When it is missing, the first
-SageAttention call fails with the exact command to run, e.g. for ComfyUI 0.45's portable (ROCm 7.2.1):
+**Windows, once:** two more packages, which pip cannot pick for you because they depend on what you have installed.
+Without them, importing SageAttention (Triton) or its first call (ROCm SDK) fails with the exact command for your
+setup.
+
+- Triton, from [`triton-windows`](https://github.com/woct0rdho/triton-windows) in the release series that matches
+  your PyTorch (PyTorch up to 2.11: 3.6, 2.12: 3.7.0, 2.13: 3.7.1, 2.14: 3.8, 2.15: 3.9); each PyTorch release is
+  only guaranteed to work with its own series, which `torch.compile` uses.
+- The ROCm SDK devel package that matches your ROCm wheels (HIP headers), from AMD's repo.radeon.com.
+
+For ComfyUI 0.45's portable (PyTorch 2.9.1, ROCm 7.2.1):
 
 ```bat
+python_embeded\python.exe -m pip install "triton-windows>=3.6.0.post26,<3.7"
 python_embeded\python.exe -m pip install https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl
 ```
 
