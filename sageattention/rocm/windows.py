@@ -1,7 +1,7 @@
 """
 Windows: what Triton needs to compile its small HIP launcher, besides ``triton-windows`` itself.
 
-- The ROCm SDK devel package matching the installed ROCm wheels (HIP headers). It comes from repo.radeon.com, so
+- The ROCm SDK devel package matching the installed ROCm wheels (HIP headers). It comes from AMD's package servers, so
   pip cannot install the matching version as a dependency of this package; we point Triton at it when it is
   there and otherwise say exactly what to run.
 - Python's ``include`` / ``libs`` folders, which embedded Pythons (ComfyUI's portable build) leave out. These are
@@ -19,7 +19,9 @@ import urllib.request
 import warnings
 import zipfile
 
+# ROCm 7.x Windows wheels are on repo.radeon.com; ROCm 10 and later are on AMD's whl-next index.
 ROCM_DEVEL_URL = "https://repo.radeon.com/rocm/windows/rocm-rel-{v}/rocm_sdk_devel-{v}-py3-none-win_amd64.whl"
+ROCM_INDEX_URL = "https://stable.repo.amd.com/rocm/whl-next/"
 PYTHON_INCLUDE_LIBS = {
     (3, 10): "python_3.10.11_include_libs.zip",
     (3, 11): "python_3.11.9_include_libs.zip",
@@ -92,8 +94,11 @@ def prepare() -> None:
         return
     rocm = _version("rocm-sdk-core")
     command = f'"{sys.executable}" -s -m pip install'
-    if rocm and re.fullmatch(r"\d+\.\d+\.\d+", rocm):
+    m = re.fullmatch(r"(\d+)\.\d+\.\d+", rocm or "")
+    if m and int(m.group(1)) < 10:
         command += f" {ROCM_DEVEL_URL.format(v=rocm)}"
+    elif m:
+        command += f" --index-url {ROCM_INDEX_URL} rocm-sdk-devel=={rocm}"
     else:
         command += f" rocm-sdk-devel=={rocm} (from the index your ROCm PyTorch came from)"
     MISSING = ("SageAttention on Windows needs the ROCm SDK devel package that matches your ROCm wheels, once "

@@ -75,7 +75,8 @@ setup.
 - Triton, from [`triton-windows`](https://github.com/woct0rdho/triton-windows) in the release series that matches
   your PyTorch (PyTorch up to 2.11: 3.6, 2.12: 3.7.0, 2.13: 3.7.1, 2.14: 3.8, 2.15: 3.9); each PyTorch release is
   only guaranteed to work with its own series, which `torch.compile` uses.
-- The ROCm SDK devel package that matches your ROCm wheels (HIP headers), from AMD's repo.radeon.com.
+- The ROCm SDK devel package that matches your ROCm wheels (HIP headers): ROCm 7.x from AMD's repo.radeon.com,
+  ROCm 10 and later with `pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ rocm-sdk-devel==<version>`.
 
 For ComfyUI 0.45's portable (PyTorch 2.9.1, ROCm 7.2.1):
 
